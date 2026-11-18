@@ -1,0 +1,87 @@
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index b4948b6c58..4db04e64b9 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1139,7 +1139,7 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
+ 
+ def _content_policy_blocked_result(
+     messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str,
+-    boundary_row_id: Optional[int] = None,
++    boundary_row_id: Optional[int] = None, turn_messages: Optional[list] = None,
+ ) -> dict[str, Any]:
+     """Terminal turn result for a content-policy block (deterministic for the unchanged
+     prompt, so no retry); shared by the HTTP-200 and exception paths. ``messages`` is the
+@@ -1152,6 +1152,8 @@ def _content_policy_blocked_result(
+     }
+     if boundary_row_id is not None:
+         result["refused_turn_boundary_row_id"] = boundary_row_id
++    if turn_messages is not None:  # model-router patch: lets a plugin-recovered reply keep the turn
++        result["_refused_turn_messages"] = list(turn_messages)
+     return result
+ 
+ 
+@@ -1866,6 +1868,7 @@ def run_conversation(
+     from agent.primary_auth_fallback import lead_failed_turn_with_primary_auth
+     lead_failed_turn_with_primary_auth(agent, result)
+     settle_held_final(agent, result)
++    _keep_plugin_recovered_refusal(agent, result)
+     result = export_current_turn_boundary(agent, result, user_message)
+     if isinstance(result, dict):
+         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
+@@ -1917,6 +1920,32 @@ def _redact_display_metadata(metadata: dict) -> dict:
+     return {k: _redact(v) for k, v in metadata.items()}
+ 
+ 
++def _keep_plugin_recovered_refusal(agent, result: Any) -> None:
++    """model-router patch (option B): when a ``transform_llm_output`` plugin replaced a
++    content-policy refusal with a recovered reply, keep the turn as a normal completed turn
++    (user row + tool rounds + the recovered assistant reply) instead of erasing it. Clearing
++    ``failure_reason`` stops every owner (TUI/Desktop, CLI, ACP, gateway) from rewinding it.
++    Trade-off: the refused request stays in model context and may re-trip the filter later."""
++    if not isinstance(result, dict):
++        return
++    turn_messages = result.pop("_refused_turn_messages", None)
++    if result.get("failure_reason") != "content_policy_blocked" or not result.get("response_transformed"):
++        return
++    reply = result.get("final_response")
++    if not isinstance(turn_messages, list) or not isinstance(reply, str) or not reply.strip():
++        return
++    try:
++        messages = list(turn_messages)
++        append_message(messages, {"role": "assistant", "content": reply})
++        agent._flush_messages_to_session_db(messages)
++    except Exception:
++        logger.warning("model-router patch: could not keep the recovered reply", exc_info=True)
++        return
++    for key in ("failed", "error", "failure_reason", "failure_retryable", "refused_turn_boundary_row_id"):
++        result.pop(key, None)
++    result.update(messages=messages, completed=True)
++
++
+ def _close_durable_failed_turn(agent, result: Any) -> None:
+     """Append a Hermes-authored assistant boundary when a failed turn left its durable tail open
+     (``OPEN_TURN_TAIL_ROLES``: the accepted ``user`` row, or a ``tool`` row when a call ran before
+diff --git a/agent/turn_recovery.py b/agent/turn_recovery.py
+index 59bfdfc09b..f3e20af412 100644
+--- a/agent/turn_recovery.py
++++ b/agent/turn_recovery.py
+@@ -1148,7 +1148,7 @@ def nonretryable_client_error_result(
+             _clean, api_call_count,
+             final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+             error_detail=_nonretryable_summary,
+-            boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
++            turn_messages=messages, boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
+         )
+     # Skip persistence on likely context-overflow (400 + large session): persisting the
+     # failed message grows the session and repeats the failure.
+diff --git a/agent/turn_truncation.py b/agent/turn_truncation.py
+index c013d30232..f72bd3fd60 100644
+--- a/agent/turn_truncation.py
++++ b/agent/turn_truncation.py
+@@ -806,5 +806,5 @@ def handle_content_policy_refusal(
+     return RefusalVerdict("return", _content_policy_blocked_result(
+         clean_history, api_call_count, final_response=_refusal_response,
+         error_detail=_refusal_text or "model declined (content_filter)",
+-        boundary_row_id=_boundary_row_id,
++        turn_messages=messages, boundary_row_id=_boundary_row_id,
+     ), active_system_prompt)

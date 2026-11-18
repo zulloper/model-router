@@ -258,3 +258,9 @@
 - 가드레일 차단이 실제로 API 오류와 거절 문장 중 어느 쪽으로 더 많이 오는지 — 시도 기록이 쌓이면.
 - 승격 권장값(20회/8회/60%+15%p/75%/40%)이 실제 사용에서 적당한지 — 몇 주 기록이 쌓인 뒤.
 - 외부 리뷰를 두 번 받았고 둘 다 실질적으로 설계를 바꿨다. 큰 단계 전 리뷰는 계속 할 가치가 있다.
+
+## 2026-11-19 — Desktop에서 복구된 content_policy 답이 사라지는 문제, Hermes 내부 패치(B안)
+- 원인: `tui_gateway/prompt_turn.py`가 `failure_reason == content_policy_blocked`면 `retain_refused_turn_for_display`로 턴을 소프트 삭제. 플러그인의 transform은 답 텍스트만 바꿔서 이 표시를 못 지움.
+- 패치: `_content_policy_blocked_result`에 턴 전체 메시지를 실어 보내고, `run_conversation`의 `settle_held_final` 직후 `response_transformed`면 답을 붙여 flush 후 실패 표시를 지움 → 모든 owner가 rewind 안 함.
+- 놀란 점: Hermes 번들 Python에는 pytest가 없고 의존성은 `~/.hermes/installs/.../venv`에 따로 있음. 가짜 agent로 스모크 테스트만 함.
+- 남은 위험: 거부된 요청이 문맥에 남아 다음 턴에 필터 재발 가능. 안 되면 A안(표시 전용 행).
