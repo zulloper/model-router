@@ -159,6 +159,13 @@ config_schema:
     description: >
       One more call, on the first good answer's model, merges the tier's good answers. Skipped
       when time is short; if it fails, the first good answer is used.
+  auto_promote:
+    type: bool
+    default: true
+    label: Move models that keep winning up the ladder
+    description: >
+      Learned from the attempt log (requests as written only). Never rewrites tiers and never puts a
+      model below where you placed it; /route shows promotions and /route reset clears them.
   enrich_on_retry:
     type: bool
     default: true

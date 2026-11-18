@@ -39,6 +39,14 @@ def describe(s: Settings, router: Router, session_id: str = "", config: Any = No
         order = router.order_for(s, cls, session_id=session_id)
         pref = f"  ★ learned: {prefs[cls]}" if cls in prefs else ""
         lines.append(f"  {cls:<8} {' → '.join(str(c) for c in order) or '-'}{pref}")
+    if not s.ladder.empty:
+        from .promote import effective
+        promoted = router.promotions() if s.auto_promote else {}
+        ladder = effective(s.ladder, promoted)
+        lines += ["", "Tier ladder" + (" (auto-promote on)" if s.auto_promote else "") + ":"]
+        for index, tier in enumerate(ladder.tiers, start=1):
+            names = [f"{c.key} ↑{promoted[c.key]}" if promoted.get(c.key) else c.key for c in tier]
+            lines.append(f"  tier {index}: {', '.join(names) or '(empty — its models were promoted)'}")
     pin = router.pinned(session_id)
     if pin is not None:
         lines += ["", f"Pinned in this chat: {pin}"]
@@ -123,7 +131,7 @@ def make_handler(ctx: Any, router: Router, settings_fn):
             return stats(router, s)
         if cmd == "reset":
             router.reset_stats()
-            return "Forgot all model stats and learned preferences."
+            return "Forgot all model stats, learned preferences and tier promotions."
         if cmd == "explore":
             return ("Exploring runs inside a turn. Ask the agent, e.g. \"여러 모델로 이 작업을 비교해서 "
                     "가장 잘 맞는 모델을 찾아줘: <task>\" — it calls the route_explore tool.")

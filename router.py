@@ -51,6 +51,7 @@ class Settings:
     enrich_on_retry: bool = True
     parallel: bool = True
     synthesize: bool = True
+    auto_promote: bool = True
 
     @property
     def active(self) -> bool:
@@ -95,6 +96,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         enrich_on_retry=bool(get("enrich_on_retry", True)),
         parallel=bool(get("parallel", True)),
         synthesize=bool(get("synthesize", True)),
+        auto_promote=bool(get("auto_promote", True)),
     )
 
 
@@ -376,6 +378,10 @@ class Router:
         with self._lock:
             return {k: dict(v) for k, v in self._health.items()}
 
+    def promotions(self) -> dict[str, int]:
+        """Learned tier promotions (written by the ladder, :mod:`promote`)."""
+        return {k: int(v) for k, v in self._load("promotions", {}).items() if isinstance(v, (int, float))}
+
     def reset_stats(self) -> None:
         with self._lock:
             self._health.clear()
@@ -383,3 +389,4 @@ class Router:
             self._sec_level.clear()
         self._save("health", {})
         self._save("preferred", {})
+        self._save("promotions", {})

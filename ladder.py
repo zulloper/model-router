@@ -26,7 +26,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
-from . import enrich
+from . import enrich, promote
 from .attempts import ENRICH, ORIGIN, PLAIN, SYNTH, Attempt, AttemptLog, prompt_hash
 from .outcome import BLOCKED, DEGRADED, OK, TurnSignals, Verdict, judge
 from .scope import Candidate
@@ -121,9 +121,12 @@ def _call_before(deadline: float, clock: Callable[[], float], fn: Callable[[], A
 class LadderRunner:
     def __init__(self, ctx: Any, signals: TurnSignals, log: Optional[AttemptLog] = None,
                  clock: Callable[[], float] = time.monotonic,
-                 timeout_fn: Callable[[], float] = hook_timeout) -> None:
+                 timeout_fn: Callable[[], float] = hook_timeout,
+                 promotions: Optional[promote.Promotions] = None, evaluate_async: bool = True) -> None:
         self.ctx, self.signals, self.log = ctx, signals, log
         self._clock, self._timeout_fn = clock, timeout_fn
+        self.promotions = promotions or promote.Promotions(getattr(ctx, "state", None))
+        self._evaluate_async = evaluate_async
         self._lock = threading.Lock()
         self._turns: "OrderedDict[str, _Turn]" = OrderedDict()
 
@@ -181,8 +184,10 @@ class LadderRunner:
         # Per tier: the request as written, then (if it adds anything) the enriched request.
         # The plain round skips the model that just failed (same question again); the enriched
         # round may ask it, since the request is no longer the same.
+        auto_promote = getattr(settings, "auto_promote", True)
+        ladder = promote.effective(settings.ladder, self.promotions.get()) if auto_promote else settings.ladder
         chosen: Optional[_Chosen] = None
-        for tier_index, tier in enumerate(settings.ladder.tiers):
+        for tier_index, tier in enumerate(ladder.tiers):
             for kind in (PLAIN, ENRICH):
                 if kind == ENRICH and enriched is None:
                     continue
@@ -201,6 +206,8 @@ class LadderRunner:
                 break
 
         self._write(records)
+        if auto_promote:
+            self._evaluate(settings.ladder)
         if not chosen:
             return None
         how = "enriched request, without tools" if chosen.kind == ENRICH else "without tools"
@@ -328,6 +335,25 @@ class LadderRunner:
         attempt = Attempt(turn_id=turn_id, session_id=turn.session_id, kind=kind, tier=tier_index, index=index,
                           provider=cand.provider, model=cand.model, outcome="error", reason=reason[:300])
         return _Try(cand, attempt, "", "")
+
+    def _evaluate(self, configured: Any) -> None:
+        """Re-check promotions against the attempt log, off the hook's thread: reading the log must
+        not cost the reply any time (invariant 4)."""
+        if self.log is None:
+            return
+
+        def run() -> None:
+            try:
+                changes = promote.maybe_evaluate(configured, self.promotions, self.log.recent(1000))
+                for line in changes or ():
+                    logger.info("model-router: promotion %s", line)
+            except Exception:
+                logger.exception("model-router: promotion check failed")
+
+        if self._evaluate_async:
+            threading.Thread(target=run, name="model-router-promote", daemon=True).start()
+        else:
+            run()
 
     def _write(self, records: list[Attempt]) -> None:
         if self.log is None:
