@@ -55,6 +55,7 @@ def _attempts(api, tmp_path):
 def test_build_state(api, tmp_path):
     state = State({"promotions": {"xai/grok-5": 1}})
     out = api.build_state(CFG, state, {"openai-codex": ["gpt-6.2-sol"]}, _attempts(api, tmp_path))
+    assert out["schema"] == api.STATE_SCHEMA  # the Desktop page refuses any other shape
     assert out["plugin_enabled"] is True
     assert out["settings"]["tiers"] == [["openai-codex/gpt-6.2-sol"], ["anthropic/claude-opus-4-8", "xai/grok-5"]]
     assert out["ladder"] == [[{"key": "openai-codex/gpt-6.2-sol", "promoted": 0}, {"key": "xai/grok-5", "promoted": 1}],
@@ -118,3 +119,8 @@ def test_desktop_and_gateway_share_promotions(api, ctx):
     api._mod("promote").Promotions(ctx.state).clear()          # what POST /reset does
     assert hooks.ladder.promotions.get() == {}
     assert plugin  # imported for its side effect of loading the package
+
+
+def test_desktop_page_expects_the_backends_schema(api):
+    page = (Path(__file__).resolve().parents[1] / "desktop" / "plugin.js").read_text()
+    assert f"const STATE_SCHEMA = {api.STATE_SCHEMA}" in page

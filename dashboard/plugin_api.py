@@ -28,6 +28,9 @@ router = APIRouter()
 PLUGIN_ID = "model-router"
 _ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_dashboard_plugin_model_router"
+# Shape of GET /state. The Desktop page checks it: Hermes loads this file once per plugin host
+# process, so after an update the page can meet the previous backend until the gateway restarts.
+STATE_SCHEMA = 2
 _BOOL_KEYS = ("parallel", "synthesize", "enrich_on_retry", "auto_promote", "security_guardrail_defaults")
 _SETTING_KEYS = ("mode", "tiers", "hold_stream", "retry_budget_seconds", "security_roe", "extra_guardrail_patterns",
                  "max_explore") + _BOOL_KEYS
@@ -90,6 +93,7 @@ def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]], attempts
     timeout = _hook_timeout(cfg)
     model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     return {
+        "schema": STATE_SCHEMA,
         "plugin_enabled": _enabled(cfg),
         "current": {"provider": str(model.get("provider") or ""), "model": str(model.get("default") or "")},
         "settings": {

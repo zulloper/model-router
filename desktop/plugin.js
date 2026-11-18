@@ -17,6 +17,8 @@ import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'model-router'
+// GET /state shape this page understands (dashboard/plugin_api.py STATE_SCHEMA).
+const STATE_SCHEMA = 2
 const errText = e => (e && (e.detail || e.message)) || String(e)
 const HOLD_OPTIONS = [
   { id: 'auto', label: 'Auto' },
@@ -45,6 +47,9 @@ const KO = {
   "not enabled in this profile": "이 프로필에서 비활성",
   "Saving…": "저장 중…",
   "Model Router backend unavailable": "Model Router 백엔드를 사용할 수 없습니다",
+  "Model Router backend is out of date": "Model Router 백엔드가 예전 버전입니다",
+  "The gateway is still serving the previous version of this plugin's backend. Restart it (hermes gateway restart), then reopen this page.":
+    "게이트웨이가 아직 이 플러그인 백엔드의 예전 버전을 쓰고 있습니다. 게이트웨이를 재시작(hermes gateway restart)한 뒤 이 페이지를 다시 여세요.",
   "Language of this plugin's screens.": "이 플러그인 화면의 언어입니다.",
   "Climb the ladder on blocked replies": "막힌 답에 티어 사다리 사용",
   "The profile's own model answers every turn. When a reply is blocked (a guardrail, a refusal, an answer without the requested code, a model error), the ladder's models are asked instead.":
@@ -241,6 +246,14 @@ export default {
         })
       }
       const data = st.data
+      // Hermes loads the backend once per plugin host process, so right after an update this page
+      // can meet the previous version's backend. Say so instead of failing on missing fields.
+      if (!data || data.schema !== STATE_SCHEMA) {
+        return jsx(ErrorState, {
+          title: tr("Model Router backend is out of date"),
+          description: tr("The gateway is still serving the previous version of this plugin's backend. Restart it (hermes gateway restart), then reopen this page.")
+        })
+      }
       return jsxs('div', {
         className: 'flex flex-col',
         children: [
