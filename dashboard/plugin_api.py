@@ -30,11 +30,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_dashboard_plugin_model_router"
 # Shape of GET /state. The Desktop page checks it: Hermes loads this file once per plugin host
 # process, so after an update the page can meet the previous backend until the gateway restarts.
-STATE_SCHEMA = 3
+STATE_SCHEMA = 4
 _BOOL_KEYS = ("parallel", "synthesize", "enrich_on_retry", "auto_promote", "security_guardrail_defaults",
               "subagent_retry")
 _SETTING_KEYS = ("mode", "tiers", "hold_stream", "retry_budget_seconds", "security_roe", "extra_guardrail_patterns",
-                 "max_explore", "subagent_toolsets") + _BOOL_KEYS
+                 "max_explore", "subagent_toolsets", "entitlement_patterns") + _BOOL_KEYS
 
 
 def _mod(name: str):
@@ -104,7 +104,8 @@ def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]], attempts
             "auto_promote": s.auto_promote, "security_roe": s.security_roe, "hold_stream": hold,
             "retry_budget_seconds": str(s.retry_budget_seconds or "auto"),
             "security_guardrail_defaults": s.security_guardrail_defaults,
-            "extra_guardrail_patterns": list(s.extra_guardrail_patterns), "max_explore": s.max_explore,
+            "extra_guardrail_patterns": list(s.extra_guardrail_patterns),
+            "entitlement_patterns": list(s.entitlement_patterns), "max_explore": s.max_explore,
             "subagent_retry": s.subagent_retry, "subagent_toolsets": s.subagent_toolsets,
         },
         "ladder": report.ladder_rows(s, promotions),
@@ -171,13 +172,14 @@ def clean_values(values: Any) -> dict:
         out["retry_budget_seconds"] = text
     if "security_roe" in out:
         out["security_roe"] = str(out["security_roe"] or "")[:8000]
-    if "extra_guardrail_patterns" in out:
-        patterns = out["extra_guardrail_patterns"]
-        if isinstance(patterns, str):
-            patterns = patterns.splitlines()
-        if not isinstance(patterns, list):
-            raise ValueError("extra_guardrail_patterns must be a list of phrases")
-        out["extra_guardrail_patterns"] = [str(p).strip().lower() for p in patterns if str(p).strip()]
+    for key in ("extra_guardrail_patterns", "entitlement_patterns"):
+        if key in out:
+            patterns = out[key]
+            if isinstance(patterns, str):
+                patterns = patterns.splitlines()
+            if not isinstance(patterns, list):
+                raise ValueError(f"{key} must be a list of phrases")
+            out[key] = [str(p).strip().lower() for p in patterns if str(p).strip()]
     if "max_explore" in out:
         try:
             out["max_explore"] = max(1, min(8, int(out["max_explore"])))

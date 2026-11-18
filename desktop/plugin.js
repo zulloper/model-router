@@ -18,7 +18,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'model-router'
 // GET /state shape this page understands (dashboard/plugin_api.py STATE_SCHEMA).
-const STATE_SCHEMA = 3
+const STATE_SCHEMA = 4
 const errText = e => (e && (e.detail || e.message)) || String(e)
 // Inline styles, not utility classes: Desktop loads this file uncompiled, so only classes the app's
 // own CSS already has take effect. Long provider/model names must stay inside their box.
@@ -101,6 +101,9 @@ const KO = {
   "Generic guardrail errors": "일반 가드레일 오류",
   "Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail block.":
     "프로바이더 오류에 \"content filter / safety / blocked by policy / cyber\"가 있으면 가드레일 차단으로 봅니다.",
+  "Entitlement error phrases": "권한/인증 오류 문구",
+  "Comma-separated provider-error phrases that mean this session can't use a model (e.g. a hardware-key gate). Matched models fail over at once (no retries) and the recovered answer is kept — not treated as a content block.":
+    "이 세션이 특정 모델을 못 쓴다는 프로바이더 오류 문구(예: 하드웨어 키 게이트), 쉼표로 구분. 걸리면 재시도 없이 바로 다음 티어로 넘어가고 복구된 답이 저장됩니다 — 내용 차단으로 보지 않음.",
   "Models per comparison": "비교당 모델 수",
   "The most models route_explore runs side by side (one subagent each).": "route_explore가 한 번에 나란히 돌리는 최대 모델 수(모델마다 서브에이전트 하나).",
   "Warnings": "경고",
@@ -399,6 +402,12 @@ export default {
                 onSave: v => st.save({ security_roe: v })
               }),
               toggle('security_guardrail_defaults', "Generic guardrail errors", "Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail block."),
+              jsx(TextRow, {
+                title: tr("Entitlement error phrases"),
+                description: tr("Comma-separated provider-error phrases that mean this session can't use a model (e.g. a hardware-key gate). Matched models fail over at once (no retries) and the recovered answer is kept — not treated as a content block."),
+                value: (s.entitlement_patterns || []).join(", "),
+                onSave: v => st.save({ entitlement_patterns: v.split(",").map(x => x.trim()).filter(Boolean) })
+              }),
               jsx(NumberRow, {
                 title: tr("Models per comparison"),
                 description: tr("The most models route_explore runs side by side (one subagent each)."),

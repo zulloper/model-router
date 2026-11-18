@@ -1,4 +1,4 @@
-"""Model Router for Hermes Agent (0.4.2): a tier ladder for blocked replies.
+"""Model Router for Hermes Agent (0.4.3): a tier ladder for blocked replies.
 
 The profile's own model answers every turn. When a reply is blocked — a guardrail, a refusal, an
 answer without the code that was asked for, a model error — the ladder's models are asked the same

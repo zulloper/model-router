@@ -1,4 +1,4 @@
-# Model Router (Hermes 플러그인) 0.4.2
+# Model Router (Hermes 플러그인) 0.4.3
 
 막힌 답을 위한 **티어 사다리**입니다. 평소에는 프로필 기본 모델이 그대로 답합니다. 답이 막히면 사다리의
 모델들에게 같은 요청을 대신 묻습니다. 막혔다는 건 가드레일, 거절, 요청한 코드가 빠진 답, 모델 오류를
@@ -204,6 +204,7 @@ Requirements for the answer:
 | `retry_budget_seconds` | `auto` | 사다리 시간 예산(초). `hook_callback_timeout - 4`를 넘지 않음 |
 | `security_guardrail_defaults` | `true` | 프로바이더 오류의 "content filter / safety / cyber" 등을 가드레일 차단으로 분류 |
 | `extra_guardrail_patterns` | `[]` | 가드레일로 볼 추가 오류 문구(소문자) |
+| `entitlement_patterns` | `[]` | 이 세션이 그 모델을 못 쓴다는 오류 문구(예: 하드웨어 키 게이트). 재시도 없이 즉시 폴백, 턴 유지(§4) |
 | `max_explore` | `3` | `route_explore`가 한 번에 비교할 모델 수(1~8) |
 | `subagent_retry` | `false` | 도구를 쓴 턴이 막히면 서브에이전트로 재시도(§4) |
 | `subagent_toolsets` | `web` | 재시도 서브에이전트의 도구: `web` / `web+file` / `inherit`(터미널 포함, 확인 없이 실행) |
@@ -357,6 +358,7 @@ Desktop 백엔드 테스트에는 `fastapi`, `httpx`, `ruamel.yaml`이 필요합
 
 ### 변경 기록
 
+- **0.4.3**: `entitlement_patterns` 설정 추가 — 인증/권한 게이트 오류(하드웨어 키 등)를 `model_entitlement`로 분류해 재시도 없이 즉시 폴백하고 턴을 유지(복구 답이 저장됨).
 - **0.4.2**: `content_policy` 하드 거부 턴이 Desktop 저장본에 안 남는 한계를 문서화(§10·§11).
 - **0.4.1**:
   - 도구를 쓴 턴의 서브에이전트 재시도(선택, 기본 꺼짐·웹 도구만): `subagent_retry`, `subagent_toolsets`.

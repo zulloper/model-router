@@ -48,6 +48,20 @@ def test_guardrail_phrases_become_a_policy_block(ctx):
     assert classify(error_message="rate limited") is None
 
 
+def test_entitlement_phrases_become_model_entitlement_not_a_content_block(make_ctx):
+    ctx = make_ctx({"tiers": [["openai-codex/gpt-6.2-sol"]],
+                    "entitlement_patterns": ["this response cannot be shown", "hardware key"]})
+    plugin.register(ctx)
+    classify = ctx.hooks["transform_api_error_classification"][0]
+    gate = "You're approved, but this response cannot be shown; re-authenticate with your hardware key."
+    v = classify(error_message=gate)
+    assert v["reason"] == "model_entitlement" and v["retryable"] is False and v["should_fallback"] is True
+    # a genuine content refusal still blocks (entitlement patterns must not swallow it)
+    assert classify(error_message="Output blocked by the content filter")["reason"] == "content_policy_blocked"
+    # entitlement checked before guardrail: a phrase in both lists is entitlement
+    assert classify(error_message="refusal: this response cannot be shown")["reason"] == "model_entitlement"
+
+
 def test_route_status_shows_the_ladder_and_off_switch(ctx):
     plugin.register(ctx)
     route = ctx.commands["route"]

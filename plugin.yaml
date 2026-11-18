@@ -1,7 +1,7 @@
 name: model-router
 label: Model Router
 kind: standalone
-version: 0.4.2
+version: 0.4.3
 manifest_version: 2
 api_version: 1
 author: zulloper
@@ -121,6 +121,15 @@ config_schema:
     default: []
     label: Extra guardrail phrases
     description: Lower-case phrases in a provider error that mean a guardrail stopped the request.
+  entitlement_patterns:
+    type: list
+    default: []
+    label: Entitlement/auth error phrases
+    description: >
+      Lower-case phrases in a provider error that mean the account/session can't use that model
+      (e.g. a model gated behind a hardware key). Matched before the guardrail phrases; the model is
+      failed over to the next tier at once (no retries) and the turn is kept, so a recovered answer
+      persists. Not treated as a content block.
   max_explore:
     type: int
     default: 3

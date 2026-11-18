@@ -3,7 +3,7 @@
   "label": "Model Router",
   "description": "Backend for the Model Router settings pages: tier ladder, retry options, model stats.",
   "icon": "Route",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "tab": {
     "path": "/model-router",
     "hidden": true

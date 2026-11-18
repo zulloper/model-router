@@ -70,11 +70,15 @@ class RouterHooks:
 
     def on_classify_error(self, error_message: str = "", error_body: Any = None, **kwargs: Any) -> Optional[dict]:
         s = self.settings()
-        patterns = s.extra_guardrail_patterns + (GUARDRAIL_DEFAULTS if s.security_guardrail_defaults else ())
-        if not patterns:
-            return None
         text = f"{error_message or ''} {error_body if isinstance(error_body, str) else ''}"
-        if matches_guardrail(text, patterns):
+        # Entitlement/auth gates (e.g. a model that needs a hardware key this session lacks) are not
+        # content blocks: classify them as model_entitlement so Hermes falls over fast (no retries)
+        # without dropping the turn, and the ladder's recovered answer persists. Checked first, since
+        # these phrases are specific and must not be read as a content refusal.
+        if s.entitlement_patterns and matches_guardrail(text, s.entitlement_patterns):
+            return {"reason": "model_entitlement", "retryable": False, "should_fallback": True}
+        patterns = s.extra_guardrail_patterns + (GUARDRAIL_DEFAULTS if s.security_guardrail_defaults else ())
+        if patterns and matches_guardrail(text, patterns):
             return {"reason": "content_policy_blocked", "retryable": False, "should_fallback": True}
         return None
 

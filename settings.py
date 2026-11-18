@@ -35,6 +35,7 @@ class Settings:
     security_roe: str = ""
     security_guardrail_defaults: bool = True
     extra_guardrail_patterns: tuple[str, ...] = ()
+    entitlement_patterns: tuple[str, ...] = ()
     max_explore: int = 3
     subagent_retry: bool = False
     subagent_toolsets: str = "web"
@@ -73,6 +74,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
     ladder = parse_tiers(get("tiers", []))
     mode = str(get("mode", "auto") or "auto").lower()
     patterns = get("extra_guardrail_patterns", []) or []
+    entitlement = get("entitlement_patterns", []) or []
     warnings = list(ladder.warnings)
     legacy = [key for key in LEGACY_KEYS if get(key, None) not in (None, "", [], {})]
     if legacy:
@@ -89,6 +91,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         security_roe=str(get("security_roe", "") or ""),
         security_guardrail_defaults=bool(get("security_guardrail_defaults", True)),
         extra_guardrail_patterns=tuple(str(p).lower() for p in patterns if str(p).strip()),
+        entitlement_patterns=tuple(str(p).lower() for p in entitlement if str(p).strip()),
         max_explore=max(1, min(8, _as_int(get("max_explore", 3), 3))),
         subagent_retry=bool(get("subagent_retry", False)),
         subagent_toolsets=_toolsets_choice(get("subagent_toolsets", "web")),
