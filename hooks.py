@@ -56,7 +56,8 @@ class RouterHooks:
 
     def on_post_api_request(self, turn_id: str = "", task_id: str = "", provider: str = "", model: str = "",
                             **kwargs: Any) -> None:
-        self.signals.record_success(turn_id or task_id, provider, model)
+        self.signals.record_success(turn_id or task_id, provider, model,
+                                    tool_calls=kwargs.get("assistant_tool_call_count") or 0)
         return None
 
     def on_api_request_error(self, turn_id: str = "", task_id: str = "", provider: str = "",

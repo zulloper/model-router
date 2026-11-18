@@ -30,10 +30,11 @@ _ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_dashboard_plugin_model_router"
 # Shape of GET /state. The Desktop page checks it: Hermes loads this file once per plugin host
 # process, so after an update the page can meet the previous backend until the gateway restarts.
-STATE_SCHEMA = 2
-_BOOL_KEYS = ("parallel", "synthesize", "enrich_on_retry", "auto_promote", "security_guardrail_defaults")
+STATE_SCHEMA = 3
+_BOOL_KEYS = ("parallel", "synthesize", "enrich_on_retry", "auto_promote", "security_guardrail_defaults",
+              "subagent_retry")
 _SETTING_KEYS = ("mode", "tiers", "hold_stream", "retry_budget_seconds", "security_roe", "extra_guardrail_patterns",
-                 "max_explore") + _BOOL_KEYS
+                 "max_explore", "subagent_toolsets") + _BOOL_KEYS
 
 
 def _mod(name: str):
@@ -104,6 +105,7 @@ def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]], attempts
             "retry_budget_seconds": str(s.retry_budget_seconds or "auto"),
             "security_guardrail_defaults": s.security_guardrail_defaults,
             "extra_guardrail_patterns": list(s.extra_guardrail_patterns), "max_explore": s.max_explore,
+            "subagent_retry": s.subagent_retry, "subagent_toolsets": s.subagent_toolsets,
         },
         "ladder": report.ladder_rows(s, promotions),
         "promotions": promotions,
@@ -149,6 +151,8 @@ def clean_values(values: Any) -> dict:
         out["tiers"] = cleaned
     if "mode" in out and out["mode"] not in ("auto", "off"):
         raise ValueError("mode must be auto or off")
+    if "subagent_toolsets" in out and out["subagent_toolsets"] not in ("web", "web+file", "inherit"):
+        raise ValueError("subagent_toolsets must be web, web+file or inherit")
     if "hold_stream" in out and out["hold_stream"] not in ("auto", "on", "off"):
         raise ValueError("hold_stream must be auto, on or off")
     for key in _BOOL_KEYS:

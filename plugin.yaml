@@ -67,6 +67,22 @@ config_schema:
       After a tier's models fail on the request as written: quote your rules of engagement (if
       set), add an output contract when code was asked for, reword framing terms (facts stay
       verbatim and are checked in the answer), and ask the tier again.
+  subagent_retry:
+    type: bool
+    default: false
+    label: Retry tool-using turns with subagents
+    description: >
+      When the blocked turn's model had called tools, retry it with Hermes subagents (which can use
+      tools, see subagent_toolsets) instead of direct calls. Slower (a full agent run each), creates
+      child sessions, and the subagents run without asking you. Synthesis stays a direct call.
+  subagent_toolsets:
+    type: str
+    choices: ["web", "web+file", "inherit"]
+    default: web
+    label: Tools a retry subagent may use
+    description: >
+      web: web search and page extraction only (read-only). web+file: also read, write and patch files.
+      inherit: everything the session has, terminal included — commands run without your review.
   auto_promote:
     type: bool
     default: true

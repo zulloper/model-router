@@ -54,6 +54,7 @@ class Attempt:
     latency_ms: Optional[int] = None
     tokens_in: Optional[int] = None
     tokens_out: Optional[int] = None
+    transport: str = "llm"          # llm (ctx.llm, no tools) | subagent (a Hermes subagent with tools)
     started_at: float = dataclasses.field(default_factory=time.time)
     v: int = SCHEMA_VERSION
 

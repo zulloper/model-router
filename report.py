@@ -65,6 +65,8 @@ def describe(settings: Settings, promotions: Mapping[str, int], *, hold_stream: 
             lines.append(f"  tier {index}: {', '.join(names) or '(empty — its models were promoted)'}")
     flags = [f"parallel {'on' if settings.parallel else 'off'}", f"synthesis {'on' if settings.synthesize else 'off'}",
              f"enriched retry {'on' if settings.enrich_on_retry else 'off'}"]
+    if settings.subagent_retry:
+        flags.append(f"subagent retry for tool-using turns (tools: {settings.subagent_toolsets})")
     if hold_stream is not None:
         flags.append(f"hold_stream {'on' if hold_stream else 'off'}")
     lines += ["", "Retries: " + ", ".join(flags)]

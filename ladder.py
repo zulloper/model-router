@@ -7,6 +7,8 @@ says so. Every attempt is written to the attempt log (§6.1).
 
 Per tier the request is tried as written, then enriched (P4, :mod:`enrich`) if that adds anything.
 A tier's models run in parallel; two or more good answers are combined by one more call (P5).
+With ``subagent_retry`` on, a turn whose model used tools is retried by Hermes subagents (with the
+toolsets ``subagent_toolsets`` allows) instead of direct calls; synthesis stays a direct call.
 
 Two invariants hold here because ``transform_llm_output`` runs with ``hold_stream`` (DESIGN §6):
 
@@ -18,11 +20,13 @@ Two invariants hold here because ``transform_llm_output`` runs with ``hold_strea
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import dataclasses
 import logging
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
@@ -41,6 +45,9 @@ NO_TIMEOUT_BUDGET = 600.0       # hook_callback_timeout <= 0 disables Hermes' ca
 ROUND_SHARE = 0.7               # a parallel round that may be synthesized gets this share of the time left
 JOIN_GRACE_SECONDS = 0.5        # a round's threads end at its deadline; allow this for them to return
 SYNTH_ANSWER_CHARS = 12000      # per answer handed to the synthesizer
+SUBAGENT_GOAL_CHARS = 15000     # Hermes rejects a launch goal over 16,000 characters
+SUBAGENT_CONTEXT_CHARS = 32000  # ... and a context over 32,000
+SUBAGENT_RESULT_CHARS = 32000   # Hermes clips a subagent's answer here (subagent_lifecycle._MAX_RESULT_CHARS)
 _MAX_TURNS = 256
 _CONTEXT_MESSAGES = 6
 _CONTEXT_CHARS = 4000
@@ -49,6 +56,8 @@ _FOOTER = "\n\n— model-router: {origin} {what} ({why}); {by} answered instead 
 _SYNTH_FOOTER = ("\n\n— model-router: {origin} {what} ({why}); answers from {by} were combined by {synth} "
                  "(tier {tier}, {how}).")
 _WHAT = {BLOCKED: "was blocked", DEGRADED: "answered without the requested code"}
+_SUBAGENT_ANSWER_NOTE = ("\n\n(Your final message is delivered to the user as the answer to this request, "
+                         "so make it the complete answer.)")
 _SYNTH_ASK = ("Several answers to the same request follow. Combine them into one answer that is better than "
               "each: keep everything correct and useful from each, resolve disagreements (say which is right "
               "and why when it matters), and drop repetition. Do not add claims that none of them supports. "
@@ -85,6 +94,8 @@ class _Turn:
     session_id: str
     user_message: str
     context: list[dict[str, str]]
+    transport: str = "llm"                       # how this turn's retries run: llm | subagent
+    toolsets: Optional[tuple[str, ...]] = None   # subagent allowed_toolsets (None = the parent's)
 
 
 def recent_context(history: Any, limit: int = _CONTEXT_MESSAGES) -> list[dict[str, str]]:
@@ -166,6 +177,14 @@ class LadderRunner:
                         guardrail_patterns=tuple(getattr(settings, "extra_guardrail_patterns", ()) or ()))
         if not verdict.climb:
             return None
+        # A reply that needed tools is retried by a subagent with tools, when that is switched on;
+        # everything else by a direct call without tools (fast, no child session).
+        turn.transport, turn.toolsets = "llm", None
+        if (getattr(settings, "subagent_retry", False) and self.signals.used_tools(turn_id)
+                and getattr(self.ctx, "subagent_lifecycle", None) is not None):
+            from .settings import SUBAGENT_TOOLSETS
+            turn.transport = "subagent"
+            turn.toolsets = SUBAGENT_TOOLSETS.get(getattr(settings, "subagent_toolsets", "web"), ("web",))
         provider, model = self.signals.route(turn_id)
         origin = Candidate(provider or "?", model or model_hint or "?")
         records = [Attempt(turn_id=turn_id, session_id=session_id or turn.session_id, kind=ORIGIN, tier=None,
@@ -210,7 +229,8 @@ class LadderRunner:
             self._evaluate(settings.ladder)
         if not chosen:
             return None
-        how = "enriched request, without tools" if chosen.kind == ENRICH else "without tools"
+        tools = "with tools, as a subagent" if chosen.transport == "subagent" else "without tools"
+        how = f"enriched request, {tools}" if chosen.kind == ENRICH else tools
         what, why = _WHAT.get(verdict.outcome, "failed"), verdict.reason[:80]
         if len(chosen.sources) > 1:
             footer = _SYNTH_FOOTER.format(origin=origin.key, what=what, why=why, by=" and ".join(chosen.sources),
@@ -278,9 +298,10 @@ class LadderRunner:
                 synth.attempt.delivered = True
                 for t in good:
                     t.attempt.delivered = t.attempt.won_synthesis = True
-                return _Chosen(synth.text, kind, tier_index, synth.attempt.key, [t.attempt.key for t in good])
+                return _Chosen(synth.text, kind, tier_index, synth.attempt.key, [t.attempt.key for t in good],
+                               first.attempt.transport)
         first.attempt.delivered = True
-        return _Chosen(first.text, kind, tier_index, first.attempt.key, [first.attempt.key])
+        return _Chosen(first.text, kind, tier_index, first.attempt.key, [first.attempt.key], first.attempt.transport)
 
     def _synthesize(self, good: list["_Try"], kind: str, enriched: Optional["enrich.Enriched"], turn_id: str,
                     turn: _Turn, tier_index: int, index: int, deadline: float) -> "_Try":
@@ -298,11 +319,15 @@ class LadderRunner:
     def _try(self, cand: Candidate, kind: str, plain_messages: list, enriched: Optional["enrich.Enriched"],
              turn_id: str, turn: _Turn, tier_index: int, index: int, deadline: float) -> "_Try":
         messages = enriched.messages if kind == ENRICH and enriched is not None else plain_messages
+        if turn.transport == "subagent":
+            return self._subagent(cand, kind, messages, enriched if kind == ENRICH else None, turn_id, turn,
+                                  tier_index, index, deadline)
         return self._call(cand, kind, messages, enriched if kind == ENRICH else None, turn_id, turn, tier_index,
                           index, deadline, purpose="model-router: tier retry")
 
     def _call(self, cand: Candidate, kind: str, messages: list, enriched: Optional["enrich.Enriched"],
               turn_id: str, turn: _Turn, tier_index: int, index: int, deadline: float, purpose: str) -> "_Try":
+        """One direct call (``ctx.llm.complete``, no tools)."""
         llm = getattr(self.ctx, "llm", None)
         t0 = self._clock()
         call_timeout = max(1.0, deadline - t0 - 1.0)
@@ -313,21 +338,68 @@ class LadderRunner:
                 messages, provider=cand.provider, model=cand.model, timeout=call_timeout, purpose=purpose))
         latency = int((self._clock() - t0) * 1000)
         raw = str(getattr(res, "text", "") or "").strip() if res is not None else ""
+        usage = getattr(res, "usage", None)
+        return self._attempt(cand, kind, messages, enriched, turn_id, turn, tier_index, index, raw, err, latency,
+                             getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None), "llm")
+
+    def _subagent(self, cand: Candidate, kind: str, messages: list, enriched: Optional["enrich.Enriched"],
+                  turn_id: str, turn: _Turn, tier_index: int, index: int, deadline: float) -> "_Try":
+        """One retry as a Hermes subagent with tools (``subagent_retry``). The subagent gets the request
+        as its goal and the recent conversation as context; its final message is the answer. It is
+        cancelled at the deadline: ``wait`` only stops waiting, it does not stop the child."""
+        lifecycle = self.ctx.subagent_lifecycle
+        t0 = self._clock()
+        raw, err, handle = "", None, None
+        try:
+            from agent.subagent_lifecycle import SubagentLaunchRequest
+            goal = (messages[-1].get("content") or "")[:SUBAGENT_GOAL_CHARS]
+            earlier = "\n\n".join(f"{m.get('role')}: {m.get('content')}" for m in messages[:-1])
+            handle = lifecycle.launch(SubagentLaunchRequest(
+                goal=goal + _SUBAGENT_ANSWER_NOTE,
+                context=("Recent conversation:\n" + earlier)[:SUBAGENT_CONTEXT_CHARS] if earlier else None,
+                model=cand.model, provider=cand.provider,
+                allowed_toolsets=turn.toolsets,
+                correlation_id=f"mr-{turn_id[-16:]}-{index}-{uuid.uuid4().hex[:6]}",
+                metadata={"model_router": "tier retry", "tier": tier_index + 1}))
+            waited = lifecycle.wait(handle, timeout_seconds=max(0.5, deadline - self._clock()))
+            if getattr(waited, "timed_out", False):
+                with contextlib.suppress(Exception):
+                    lifecycle.cancel(handle, reason="model-router: ladder time budget reached")
+                err = "time budget reached; subagent cancelled"
+            else:
+                res = lifecycle.result(handle)
+                state = str(getattr(getattr(res, "terminal_state", None), "value",
+                                    getattr(res, "terminal_state", "")))
+                raw = str(getattr(res, "summary", None) or "").strip()
+                if state != "SUCCEEDED" or not raw:
+                    err = (f"subagent {state.lower() or 'failed'}: "
+                           f"{getattr(res, 'error_message', None) or getattr(res, 'error_classification', None) or 'no answer'}")
+                    raw = ""
+                elif len(raw) >= SUBAGENT_RESULT_CHARS:
+                    raw += f"\n\n[answer clipped at {SUBAGENT_RESULT_CHARS:,} characters by Hermes]"
+        except Exception as exc:
+            err = f"subagent launch failed: {type(exc).__name__}: {exc}"
+        latency = int((self._clock() - t0) * 1000)
+        return self._attempt(cand, kind, messages, enriched, turn_id, turn, tier_index, index, raw, err, latency,
+                             None, None, "subagent")
+
+    def _attempt(self, cand: Candidate, kind: str, messages: list, enriched: Optional["enrich.Enriched"],
+                 turn_id: str, turn: _Turn, tier_index: int, index: int, raw: str, err: Optional[str],
+                 latency: int, tokens_in: Any, tokens_out: Any, transport: str) -> "_Try":
+        """Judge one answer and record it."""
         text, missing = raw, []
         if enriched is not None and raw:
             text, missing = enrich.finish(raw, enriched)
         verdict = Verdict("error", err) if err else judge(text, turn.user_message)
         if verdict.outcome == OK and missing:  # invariant 1: locked facts are checked in the answer
             verdict = Verdict(DEGRADED, "missing locked facts: " + ", ".join(missing[:8]))
-        usage = getattr(res, "usage", None)
         attempt = Attempt(
             turn_id=turn_id, session_id=turn.session_id, kind=kind, tier=tier_index, index=index,
             provider=cand.provider, model=cand.model, outcome=verdict.outcome, reason=verdict.reason[:300],
             prompt_hash=prompt_hash(messages), prompt=messages, latency_ms=latency,
             glossary_hash=enriched.glossary_hash if enriched is not None else "",
             facts_expected=list(enriched.facts) if enriched is not None else [],
-            facts_missing=missing,
-            tokens_in=getattr(usage, "input_tokens", None), tokens_out=getattr(usage, "output_tokens", None))
+            facts_missing=missing, tokens_in=tokens_in, tokens_out=tokens_out, transport=transport)
         return _Try(cand, attempt, text, raw)
 
     def _failed(self, cand: Candidate, kind: str, turn_id: str, turn: _Turn, tier_index: int, index: int,
@@ -377,3 +449,4 @@ class _Chosen:
     tier: int
     by: str               # the model whose text is delivered (the synthesizer when combined)
     sources: list[str]    # the answers it came from
+    transport: str = "llm"  # how the answers were produced (llm | subagent)

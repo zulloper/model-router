@@ -80,7 +80,8 @@ def test_clean_values(api):
                      ({"retry_budget_seconds": "-5"}, "positive"),
                      ({"tiers": [["a/b"], ["a/b"]]}, "already on the ladder"),
                      ({"tiers": [["no-slash"]]}, "can't read"), ({"tiers": "a/b"}, "list of tiers"),
-                     ({"scope": {}}, "unknown setting")):
+                     ({"scope": {}}, "unknown setting"),
+                     ({"subagent_toolsets": "everything"}, "subagent_toolsets")):
         with pytest.raises(ValueError, match=msg):
             api.clean_values(bad)
 

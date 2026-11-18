@@ -19,6 +19,8 @@ LEGACY_KEYS = (
     "security_fact_lock",
 )
 HOLD_CHOICES = ("auto", "on", "off")
+# What a retry subagent may use (subagent_toolsets). "inherit" = the parent session's toolsets.
+SUBAGENT_TOOLSETS = {"web": ("web",), "web+file": ("web", "file"), "inherit": None}
 
 
 @dataclasses.dataclass
@@ -34,6 +36,8 @@ class Settings:
     security_guardrail_defaults: bool = True
     extra_guardrail_patterns: tuple[str, ...] = ()
     max_explore: int = 3
+    subagent_retry: bool = False
+    subagent_toolsets: str = "web"
     warnings: list[str] = dataclasses.field(default_factory=list)
 
     @property
@@ -47,6 +51,11 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _toolsets_choice(value: Any) -> str:
+    text = str(value or "web").strip().lower()
+    return text if text in SUBAGENT_TOOLSETS else "web"
 
 
 def hold_stream_setting(value: Any) -> str:
@@ -81,5 +90,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         security_guardrail_defaults=bool(get("security_guardrail_defaults", True)),
         extra_guardrail_patterns=tuple(str(p).lower() for p in patterns if str(p).strip()),
         max_explore=max(1, min(8, _as_int(get("max_explore", 3), 3))),
+        subagent_retry=bool(get("subagent_retry", False)),
+        subagent_toolsets=_toolsets_choice(get("subagent_toolsets", "web")),
         warnings=warnings,
     )

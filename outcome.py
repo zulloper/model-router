@@ -96,6 +96,7 @@ class TurnSignals:
         self._lock = threading.Lock()
         self._last: "OrderedDict[str, Optional[ApiFailure]]" = OrderedDict()  # None = last one succeeded
         self._route: dict[str, tuple[str, str]] = {}  # turn -> (provider, model) of its last attempt
+        self._tools: set[str] = set()                 # turns whose model called a tool
         self._max = max_turns
 
     def _put(self, turn_id: str, value: Optional[ApiFailure], provider: Any = "", model: Any = "") -> None:
@@ -109,9 +110,18 @@ class TurnSignals:
             while len(self._last) > self._max:
                 old, _ = self._last.popitem(last=False)
                 self._route.pop(old, None)
+                self._tools.discard(old)
 
-    def record_success(self, turn_id: str, provider: Any = "", model: Any = "") -> None:
+    def record_success(self, turn_id: str, provider: Any = "", model: Any = "", tool_calls: Any = 0) -> None:
         self._put(turn_id, None, provider, model)
+        if turn_id and isinstance(tool_calls, int) and tool_calls > 0:
+            with self._lock:
+                self._tools.add(turn_id)
+
+    def used_tools(self, turn_id: str) -> bool:
+        """The turn's model called at least one tool (a reply that needed tools, likely)."""
+        with self._lock:
+            return bool(turn_id) and turn_id in self._tools
 
     def record_error(self, turn_id: str, *, reason: Any = "", retryable: Any = None, status_code: Any = None,
                      error: Any = None, provider: Any = "", model: Any = "") -> None:
@@ -136,6 +146,7 @@ class TurnSignals:
         with self._lock:
             self._last.pop(turn_id, None)
             self._route.pop(turn_id, None)
+            self._tools.discard(turn_id)
 
 
 def judge(text: str, request: str = "", *, failure: Optional[ApiFailure] = None,

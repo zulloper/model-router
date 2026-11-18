@@ -18,12 +18,17 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'model-router'
 // GET /state shape this page understands (dashboard/plugin_api.py STATE_SCHEMA).
-const STATE_SCHEMA = 2
+const STATE_SCHEMA = 3
 const errText = e => (e && (e.detail || e.message)) || String(e)
 // Inline styles, not utility classes: Desktop loads this file uncompiled, so only classes the app's
 // own CSS already has take effect. Long provider/model names must stay inside their box.
 const CLIP = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }
 const clipped = text => jsx('span', { style: { ...CLIP, display: 'block' }, title: text, children: text })
+const SUBAGENT_TOOLSETS = [
+  { id: 'web', label: 'Web' },
+  { id: 'web+file', label: 'Web + files' },
+  { id: 'inherit', label: 'All (terminal)' }
+]
 const HOLD_OPTIONS = [
   { id: 'auto', label: 'Auto' },
   { id: 'on', label: 'On' },
@@ -72,6 +77,15 @@ const KO = {
   "Move models that keep winning up": "자주 이기는 모델 승격",
   "Learned from the attempt log. Never rewrites your tiers and never puts a model below where you placed it.":
     "시도 기록으로 학습합니다. 설정한 티어를 고치지 않고, 넣은 자리보다 아래로 내리지 않습니다.",
+  "Retry tool-using turns with subagents": "도구를 쓴 턴은 서브에이전트로 재시도",
+  "When the blocked turn's model had called tools, retry with Hermes subagents that can use tools, instead of direct calls. Slower (a full agent run each), creates child sessions, and runs without asking you.":
+    "막힌 턴에서 원래 모델이 도구를 썼다면, 직접 호출 대신 도구를 쓸 수 있는 Hermes 서브에이전트로 재시도합니다. 느리고(매번 에이전트 전체 실행), 자식 세션이 생기며, 사용자에게 묻지 않고 실행됩니다.",
+  "Tools a retry subagent may use": "재시도 서브에이전트가 쓸 도구",
+  "Web: search and read pages only. Web + files: also writes and patches files. All: everything the session has, terminal included — commands run without your review.":
+    "웹: 검색과 페이지 읽기만. 웹 + 파일: 파일 쓰기·수정까지. 전체: 세션이 가진 모든 도구(터미널 포함) — 명령이 사용자 확인 없이 실행됩니다.",
+  "Web": "웹",
+  "Web + files": "웹 + 파일",
+  "All (terminal)": "전체(터미널)",
   "Hold replies": "답 보류(hold_stream)",
   "Auto: on when tiers are set. Replies that end on a provider error can only be replaced while held. Holding turns off streaming. Restart the gateway to apply.":
     "자동: 티어가 있으면 켭니다. 프로바이더 오류로 끝난 답은 보류 중일 때만 바꿀 수 있습니다. 보류하면 스트리밍이 꺼집니다. 게이트웨이를 재시작해야 적용됩니다.",
@@ -352,6 +366,17 @@ export default {
               toggle('synthesize', "Combine good answers", "When two or more models of a tier answer, one more call merges their answers. Skipped when time is short."),
               toggle('enrich_on_retry', "Enriched retry", "After a tier fails on the request as written, ask it once more with your rules of engagement, an output contract when code was asked for, and the facts to keep. Framing terms are reworded and restored in the answer."),
               toggle('auto_promote', "Move models that keep winning up", "Learned from the attempt log. Never rewrites your tiers and never puts a model below where you placed it."),
+              toggle('subagent_retry', "Retry tool-using turns with subagents", "When the blocked turn's model had called tools, retry with Hermes subagents that can use tools, instead of direct calls. Slower (a full agent run each), creates child sessions, and runs without asking you."),
+              s.subagent_retry
+                ? jsx(ListRow, {
+                    title: tr("Tools a retry subagent may use"),
+                    description: tr("Web: search and read pages only. Web + files: also writes and patches files. All: everything the session has, terminal included — commands run without your review."),
+                    action: jsx(SegmentedControl, {
+                      options: SUBAGENT_TOOLSETS.map(o => ({ ...o, label: tr(o.label) })), value: s.subagent_toolsets, disabled: st.busy,
+                      onChange: v => st.save({ subagent_toolsets: v })
+                    })
+                  })
+                : null,
               jsx(ListRow, {
                 title: tr("Hold replies"),
                 description: tr("Auto: on when tiers are set. Replies that end on a provider error can only be replaced while held. Holding turns off streaming. Restart the gateway to apply."),
