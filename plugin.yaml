@@ -147,6 +147,14 @@ config_schema:
     description: >
       Unset: on when tiers are configured, off otherwise. Replies that end on a provider error
       can only be replaced while held. Holding turns off streaming.
+  enrich_on_retry:
+    type: bool
+    default: true
+    label: Retry each tier once more with an enriched request
+    description: >
+      After a tier's models fail on the request as written: add the user's rules of engagement
+      (security_roe, if set), an output contract when code was asked for, reword framing terms
+      (facts stay verbatim and are checked in the answer), and ask the tier again.
   retry_budget_seconds:
     type: str
     default: auto

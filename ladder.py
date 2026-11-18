@@ -5,8 +5,8 @@ same request — tier 1 first, then tier 2, … — through ``ctx.llm.complete``
 conversation as context). The first usable answer replaces the blocked reply, with a footer that
 says so. Every attempt is written to the attempt log (§6.1).
 
-This is the minimal path: models run one after another and the first good answer wins. Parallel
-calls and synthesis come in P5, the enriched retry in P4.
+Per tier the request is tried as written, then enriched (P4, :mod:`enrich`) if that adds anything.
+Models run one after another and the first good answer wins; parallel calls and synthesis come in P5.
 
 Two invariants hold here because ``transform_llm_output`` runs with ``hold_stream`` (DESIGN §6):
 
@@ -26,7 +26,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
-from .attempts import ORIGIN, PLAIN, Attempt, AttemptLog, prompt_hash
+from . import enrich
+from .attempts import ENRICH, ORIGIN, PLAIN, Attempt, AttemptLog, prompt_hash
 from .outcome import BLOCKED, DEGRADED, OK, TurnSignals, Verdict, judge
 from .scope import Candidate
 
@@ -41,7 +42,7 @@ _MAX_TURNS = 256
 _CONTEXT_MESSAGES = 6
 _CONTEXT_CHARS = 4000
 
-_FOOTER = "\n\n— model-router: {origin} {what} ({why}); {by} answered instead (tier {tier}, without tools)."
+_FOOTER = "\n\n— model-router: {origin} {what} ({why}); {by} answered instead (tier {tier}, {how})."
 _WHAT = {BLOCKED: "was blocked", DEGRADED: "answered without the requested code"}
 
 
@@ -162,17 +163,32 @@ class LadderRunner:
         if not messages or messages[-1].get("content") != turn.user_message:
             messages.append({"role": "user", "content": turn.user_message})
 
+        enriched: Optional[enrich.Enriched] = None
+        if getattr(settings, "enrich_on_retry", True):
+            enriched = enrich.build(turn.context, turn.user_message, roe=getattr(settings, "security_roe", ""))
+            if not enrich.worth_it(enriched):
+                enriched = None  # it would only repeat the plain round
+
+        # Per tier: the request as written, then (if it adds anything) the enriched request.
+        # The plain round skips the model that just failed (same question again); the enriched
+        # round may ask it, since the request is no longer the same.
         chosen: Optional[tuple[Attempt, str, int]] = None
         for tier_index, tier in enumerate(settings.ladder.tiers):
-            for cand in tier:
-                if cand.key == origin.key:
-                    continue  # the model that just failed, asked the same thing again
-                if deadline - self._clock() < MIN_CALL_SECONDS:
-                    break
-                attempt, text = self._try(cand, messages, turn_id, turn, tier_index, len(records), deadline)
-                records.append(attempt)
-                if attempt.outcome == OK:
-                    chosen = (attempt, text, tier_index)
+            for kind in (PLAIN, ENRICH):
+                if kind == ENRICH and enriched is None:
+                    continue
+                for cand in tier:
+                    if kind == PLAIN and cand.key == origin.key:
+                        continue
+                    if deadline - self._clock() < MIN_CALL_SECONDS:
+                        break
+                    attempt, text = self._try(cand, kind, messages, enriched, turn_id, turn, tier_index,
+                                              len(records), deadline)
+                    records.append(attempt)
+                    if attempt.outcome == OK:
+                        chosen = (attempt, text, tier_index)
+                        break
+                if chosen or deadline - self._clock() < MIN_CALL_SECONDS:
                     break
             if chosen or deadline - self._clock() < MIN_CALL_SECONDS:
                 break
@@ -183,12 +199,14 @@ class LadderRunner:
         if not chosen:
             return None
         attempt, text, tier_index = chosen
+        how = "enriched request, without tools" if attempt.kind == ENRICH else "without tools"
         footer = _FOOTER.format(origin=origin.key, what=_WHAT.get(verdict.outcome, "failed"),
-                                why=verdict.reason[:80], by=attempt.key, tier=tier_index + 1)
+                                why=verdict.reason[:80], by=attempt.key, tier=tier_index + 1, how=how)
         return text.rstrip() + footer
 
-    def _try(self, cand: Candidate, messages: list, turn_id: str, turn: _Turn, tier_index: int, index: int,
-             deadline: float) -> tuple[Attempt, str]:
+    def _try(self, cand: Candidate, kind: str, plain_messages: list, enriched: Optional["enrich.Enriched"],
+             turn_id: str, turn: _Turn, tier_index: int, index: int, deadline: float) -> tuple[Attempt, str]:
+        messages = enriched.messages if kind == ENRICH and enriched is not None else plain_messages
         llm = getattr(self.ctx, "llm", None)
         t0 = self._clock()
         call_timeout = max(1.0, deadline - t0 - 1.0)
@@ -200,12 +218,20 @@ class LadderRunner:
                 purpose="model-router: tier retry"))
         latency = int((self._clock() - t0) * 1000)
         text = str(getattr(res, "text", "") or "").strip() if res is not None else ""
+        missing: list[str] = []
+        if kind == ENRICH and enriched is not None and text:
+            text, missing = enrich.finish(text, enriched)
         verdict = Verdict("error", err) if err else judge(text, turn.user_message)
+        if verdict.outcome == OK and missing:  # invariant 1: locked facts are checked in the answer
+            verdict = Verdict(DEGRADED, "missing locked facts: " + ", ".join(missing[:8]))
         usage = getattr(res, "usage", None)
         attempt = Attempt(
-            turn_id=turn_id, session_id=turn.session_id, kind=PLAIN, tier=tier_index, index=index,
+            turn_id=turn_id, session_id=turn.session_id, kind=kind, tier=tier_index, index=index,
             provider=cand.provider, model=cand.model, outcome=verdict.outcome, reason=verdict.reason[:300],
             prompt_hash=prompt_hash(messages), prompt=messages, latency_ms=latency,
+            glossary_hash=enriched.glossary_hash if kind == ENRICH and enriched is not None else "",
+            facts_expected=list(enriched.facts) if kind == ENRICH and enriched is not None else [],
+            facts_missing=missing,
             tokens_in=getattr(usage, "input_tokens", None), tokens_out=getattr(usage, "output_tokens", None))
         return attempt, text
 

@@ -48,6 +48,7 @@ class Settings:
     warnings: list[str]
     ladder: Ladder = dataclasses.field(default_factory=Ladder)  # 0.4.0 tiers
     retry_budget_seconds: Any = "auto"
+    enrich_on_retry: bool = True
 
     @property
     def active(self) -> bool:
@@ -89,6 +90,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         warnings=scope.warnings + route_warnings + list(ladder.warnings),
         ladder=ladder,
         retry_budget_seconds=get("retry_budget_seconds", "auto"),
+        enrich_on_retry=bool(get("enrich_on_retry", True)),
     )
 
 
