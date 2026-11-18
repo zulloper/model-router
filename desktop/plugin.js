@@ -20,6 +20,10 @@ const ID = 'model-router'
 // GET /state shape this page understands (dashboard/plugin_api.py STATE_SCHEMA).
 const STATE_SCHEMA = 2
 const errText = e => (e && (e.detail || e.message)) || String(e)
+// Inline styles, not utility classes: Desktop loads this file uncompiled, so only classes the app's
+// own CSS already has take effect. Long provider/model names must stay inside their box.
+const CLIP = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }
+const clipped = text => jsx('span', { style: { ...CLIP, display: 'block' }, title: text, children: text })
 const HOLD_OPTIONS = [
   { id: 'auto', label: 'Auto' },
   { id: 'on', label: 'On' },
@@ -473,7 +477,7 @@ export default {
                   className: 'flex items-center gap-2 text-sm',
                   children: [
                     jsx('span', { className: 'w-5 text-right text-xs text-(--ui-text-tertiary)', children: `${k + 1}.` }),
-                    jsx('span', { className: 'font-mono text-xs', children: key }),
+                    jsx('span', { className: 'font-mono text-xs', style: CLIP, title: key, children: key }),
                     isDefault(key) ? jsx(Badge, { variant: 'muted', size: 'xs', children: tr('default') }) : null,
                     promoted[key] ? jsx(Badge, { variant: 'success', size: 'xs', children: `↑${promoted[key]}` }) : null,
                     jsx('div', { className: 'flex-1' }),
@@ -489,7 +493,14 @@ export default {
                 jsxs(Select, {
                   value: prov[i] || '', onValueChange: v => pickProvider(i, v),
                   children: [
-                    jsx(SelectTrigger, { className: 'h-7 w-56 text-xs', children: jsx(SelectValue, { placeholder: tr("Provider") }) }),
+                    jsx(SelectTrigger, {
+                      className: 'h-7 text-xs', style: { width: 240, maxWidth: '100%', ...CLIP },
+                      title: prov[i] || undefined,
+                      children: jsx(SelectValue, {
+                        placeholder: tr("Provider"),
+                        children: prov[i] ? clipped(`${prov[i]} (${freeModels(prov[i]).length})`) : undefined
+                      })
+                    }),
                     jsx(SelectContent, {
                       children: providers.map(p =>
                         jsx(SelectItem, { key: p, value: p, children: `${p} (${freeModels(p).length})` }))
@@ -501,8 +512,12 @@ export default {
                   onValueChange: v => setModel({ ...model, [i]: v }),
                   children: [
                     jsx(SelectTrigger, {
-                      className: 'h-7 w-72 text-xs',
-                      children: jsx(SelectValue, { placeholder: prov[i] ? tr("Model") : tr("Pick a provider first") })
+                      className: 'h-7 text-xs', style: { width: 300, maxWidth: '100%', ...CLIP },
+                      title: model[i] || undefined,
+                      children: jsx(SelectValue, {
+                        placeholder: prov[i] ? tr("Model") : tr("Pick a provider first"),
+                        children: model[i] ? clipped(model[i]) : undefined
+                      })
                     }),
                     jsx(SelectContent, {
                       children: (prov[i] ? freeModels(prov[i]) : []).map(m =>
