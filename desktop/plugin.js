@@ -1,16 +1,15 @@
-// Model Router — Desktop half: Settings ▸ Plugins ▸ Model Router.
+// Model Router — Desktop half: Settings ▸ Plugins ▸ Model Router (0.4.0, tier ladder).
 //
-//   Model Router        routing on/off, classifier, cross-provider switch, retries, warnings
-//   ├ Allowed models    check up to 3 providers and the models routing may use on each
-//   ├ Routes            per task class: the model to try first and its reasoning effort
-//   └ Stats             per-model outcomes, cool-downs, learned preferences, reset
+//   Model Router        on/off, retry options, time budget, rules of engagement, warnings
+//   ├ Tiers             the ladder a blocked reply climbs: models per tier, their order
+//   └ Stats             per-model outcomes from the attempt log, promotions, reset
 //
 // Every read and write goes to this package's backend (dashboard/plugin_api.py) through ctx.rest,
-// which the app scopes to the active profile, so each profile keeps its own allowlist.
+// which the app scopes to the active profile, so each profile keeps its own ladder.
 // Plain ESM with jsx() calls: Desktop loads this file uncompiled.
 
 import {
-  Badge, Button, Checkbox, EmptyState, ErrorState, Input, ListRow, Loader, SegmentedControl, Select,
+  Badge, Button, EmptyState, ErrorState, Input, ListRow, Loader, SegmentedControl, Select,
   SelectContent, SelectItem, SelectTrigger, SelectValue, StatusDot, ToggleRow, host, pluginSettingsHref,
   queryClient, useQuery, useValue, atom
 } from '@hermes/plugin-sdk'
@@ -18,25 +17,18 @@ import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'model-router'
-const CLASS_HELP = {
-  quick: 'Short lookups, translation, summaries',
-  standard: 'Everyday writing and explanations',
-  code: 'Writing, fixing and reviewing code',
-  deep: 'Hard reasoning, design, analysis, long tasks',
-  sec: 'CVE analysis, exploit/PoC, reversing, red team'
-}
-const CLASSIFIERS = [
-  { id: 'rules', label: 'Rules' },
-  { id: 'hybrid', label: 'Hybrid' },
-  { id: 'llm', label: 'Model' }
-]
-
-const keyOf = cand => String(cand || '').split('@')[0]
-const effortOf = cand => {
-  const s = String(cand || '')
-  return s.includes('@') ? s.slice(s.lastIndexOf('@') + 1) : ''
-}
+// GET /state shape this page understands (dashboard/plugin_api.py STATE_SCHEMA).
+const STATE_SCHEMA = 2
 const errText = e => (e && (e.detail || e.message)) || String(e)
+// Inline styles, not utility classes: Desktop loads this file uncompiled, so only classes the app's
+// own CSS already has take effect. Long provider/model names must stay inside their box.
+const CLIP = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }
+const clipped = text => jsx('span', { style: { ...CLIP, display: 'block' }, title: text, children: text })
+const HOLD_OPTIONS = [
+  { id: 'auto', label: 'Auto' },
+  { id: 'on', label: 'On' },
+  { id: 'off', label: 'Off' }
+]
 
 // ── Language ───────────────────────────────────────────────────────────────────────────
 // The app's own language list has no Korean, so this plugin carries a small English/Korean switch
@@ -51,88 +43,85 @@ const detectLang = () =>
   typeof navigator !== 'undefined' && /^ko\b/i.test(navigator.language || '') ? 'ko' : 'en'
 const $lang = atom(detectLang())
 const KO = {
-  "Route each turn": "요청마다 모델 자동 선택",
-  "Task classifier": "작업 분류 방식",
-  "Move the session across providers": "프로바이더 간 세션 이동",
-  "Re-answer soft refusals": "약한 거절 재답변",
-  "Cool-down (minutes)": "쿨다운(분)",
-  "Models per comparison": "비교당 모델 수",
-  "Redo security answers without code": "코드 없는 보안 답변 재작성",
-  "Security preamble": "보안 프리앰블",
-  "Rules of engagement": "교전 규칙(ROE)",
-  "Generic guardrail errors": "일반 가드레일 오류",
-  "Guardrail round-trip": "가드레일 왕복",
-  "Highest sanitize level": "최고 순화 단계",
-  "Retry the refused model first": "거절한 모델 먼저 재시도",
-  "Lock facts": "사실 고정",
-  "Model-assisted rephrase": "모델 보조 재서술",
-  "Warnings": "경고",
-  "Model Router backend unavailable": "Model Router 백엔드를 사용할 수 없습니다",
+  "General": "일반",
+  "Tiers": "티어",
+  "Stats": "통계",
+  "profile": "프로필",
   "enabled": "활성",
   "not enabled in this profile": "이 프로필에서 비활성",
   "Saving…": "저장 중…",
-  "No providers found": "프로바이더가 없습니다",
-  "session provider": "세션 프로바이더",
-  "Add a model id": "모델 ID 추가",
-  "Check at least one model, or this provider is not saved.": "모델을 하나 이상 체크하세요. 그렇지 않으면 이 프로바이더는 저장되지 않습니다.",
-  "Save allowlist": "허용 목록 저장",
-  "Undo": "되돌리기",
-  "No allowed models yet": "허용된 모델이 아직 없습니다",
-  "Models": "모델",
-  "No outcomes yet.": "아직 기록이 없습니다.",
-  "Learned preferences": "학습된 선호",
-  "None.": "없음.",
-  "Clear": "지우기",
-  "Refresh": "새로고침",
-  "Click again to forget everything": "한 번 더 누르면 전부 지웁니다",
-  "Reset stats and preferences": "통계와 선호 초기화",
+  "Model Router backend unavailable": "Model Router 백엔드를 사용할 수 없습니다",
+  "Model Router backend is out of date": "Model Router 백엔드가 예전 버전입니다",
+  "The gateway is still serving the previous version of this plugin's backend. Restart it (hermes gateway restart), then reopen this page.":
+    "게이트웨이가 아직 이 플러그인 백엔드의 예전 버전을 쓰고 있습니다. 게이트웨이를 재시작(hermes gateway restart)한 뒤 이 페이지를 다시 여세요.",
+  "Language of this plugin's screens.": "이 플러그인 화면의 언어입니다.",
+  "Climb the ladder on blocked replies": "막힌 답에 티어 사다리 사용",
+  "The profile's own model answers every turn. When a reply is blocked (a guardrail, a refusal, an answer without the requested code, a model error), the ladder's models are asked instead.":
+    "평소에는 프로필 기본 모델이 그대로 답합니다. 답이 막히면(가드레일, 거절, 요청한 코드가 빠진 답, 모델 오류) 사다리의 모델들에게 대신 묻습니다.",
+  "Tier ladder": "티어 사다리",
   "Edit": "편집",
-  "Save": "저장",
-  "Add": "추가",
-  "Pick a model and reasoning effort per request from the allowed models. Off leaves the session model alone.": "허용된 모델 중에서 요청마다 모델과 추론 강도를 고릅니다. 끄면 세션의 모델을 그대로 둡니다.",
-  "Nothing allowed yet — routing does nothing until you check models under Allowed models.": "아직 허용된 모델이 없습니다. 허용 모델에서 모델을 체크하기 전까지 라우팅은 아무것도 하지 않습니다.",
-  "Rules: keywords and length, no extra call. Hybrid: asks a model only when rules are unsure. Model: always asks.": "규칙: 키워드와 길이로 판단하며 추가 호출이 없습니다. 하이브리드: 규칙이 애매할 때만 모델에게 묻습니다. 모델: 항상 모델에게 묻습니다.",
-  "Off: models change only within the provider the session is on (public plugin API). On: the session moves to another allowed provider when the route says so. Uses Hermes internals and may break after an update; it falls back to off when they are missing.": "꺼짐: 세션이 속한 프로바이더 안에서만 모델을 바꿉니다(공개 플러그인 API). 켜짐: 경로가 지시하면 세션을 다른 허용 프로바이더로 옮깁니다. Hermes 내부 기능을 쓰기 때문에 업데이트 후 동작하지 않을 수 있으며, 내부 기능이 없으면 꺼진 상태로 돌아갑니다.",
-  "A short \"I can't help with that\" reply is answered again by another allowed model (without tools).": "\"도와드릴 수 없습니다\" 같은 짧은 거절 답변은 다른 허용 모델이 (도구 없이) 다시 답합니다.",
-  "A model that fails twice in a row moves to the back of every route for this long.": "연속 두 번 실패한 모델은 이 시간 동안 모든 경로의 맨 뒤로 밀립니다.",
-  "The most models route_explore runs side by side (one subagent each).": "route_explore가 한 번에 나란히 실행하는 최대 모델 수입니다(모델마다 서브에이전트 하나).",
-  "On security turns, an answer asked for a PoC or code but delivered prose is retried on another allowed model with an output contract.": "보안 요청에서 PoC나 코드를 요청했는데 설명만 돌아오면, 출력 규칙을 붙여 다른 허용 모델로 다시 시킵니다.",
-  "On security turns, put authorization, an output contract (runnable PoC, exact offsets, no hedging) and a CVE workflow into the system prompt. Does not remove provider guardrails.": "보안 요청의 시스템 프롬프트에 권한 가정, 출력 규칙(실행 가능한 PoC, 정확한 오프셋, 얼버무리지 않기), CVE 작업 순서를 넣습니다. 제공자의 가드레일을 없애지는 않습니다.",
-  "Target, period, scope, contacts. Models refuse less when authorization is explicit.": "대상, 기간, 범위, 연락처. 권한이 명확하면 모델이 덜 거절합니다.",
-  "e.g. Target 10.10.0.0/24, 2026-11-01..11-30, authorized": "예: 대상 10.10.0.0/24, 2026-11-01..11-30, 승인됨",
-  "Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail and move to the next allowed model.": "제공자 오류에 \"content filter / safety / blocked by policy / cyber\"가 있으면 가드레일로 보고 다음 허용 모델로 넘어갑니다.",
-  "After a refusal, rephrase the request (framing terms only; CVE ids, versions and offsets stay verbatim), retry, then restore the answer to your terms. Escalates L1 wording -> L2 walkthrough -> L3 analysis/code split.": "거절된 뒤 요청의 표현만 바꿔(CVE 번호, 버전, 오프셋은 그대로) 다시 보내고, 답변은 원래 표현으로 복원합니다. 1단계 표현 → 2단계 단계별 구성 → 3단계 분석/코드 분리 순으로 올라갑니다.",
-  "1: wording only. 2: + walkthrough structure. 3: + split into analysis and code.": "1: 표현만. 2: + 단계별 구성. 3: + 분석과 코드 분리.",
-  "Use the next level on the model that refused before switching to another one.": "다른 모델로 넘어가기 전에, 거절한 모델에 다음 단계로 먼저 시도합니다.",
-  "Never substitute CVE ids, versions, offsets, hashes or symbols; if the answer drops one, retry with the missing facts listed.": "CVE 번호, 버전, 오프셋, 해시, 심볼은 바꾸지 않습니다. 답변에서 빠지면 빠진 항목을 적어 다시 요청합니다.",
-  "At L2+, let a model reword the request first (one structured call). Deterministic rules remain the fallback.": "2단계 이상에서 모델이 요청을 먼저 다듬습니다(구조화 호출 1회). 규칙 기반 방식은 대체 수단으로 남습니다.",
-  "This profile has no provider with credentials yet. Add one with `hermes model`, then come back.": "이 프로필에는 자격 증명이 있는 프로바이더가 아직 없습니다. `hermes model`로 추가한 뒤 다시 오세요.",
-  "Unsaved changes. Running sessions pick them up on their next turn.": "저장하지 않은 변경 사항이 있습니다. 실행 중인 세션은 다음 턴부터 반영합니다.",
-  "Pick the model each kind of task tries first and its reasoning effort. The other allowed models follow automatically as backups when a model is stopped by a guardrail, a refusal or an error.": "작업 종류마다 가장 먼저 시도할 모델과 추론 강도를 고르세요. 나머지 허용 모델은 모델이 가드레일, 거절, 오류로 멈출 때 자동으로 예비가 됩니다.",
-  "Check providers and models under Allowed models first.": "먼저 허용 모델에서 프로바이더와 모델을 체크하세요.",
-  "Outcomes the router recorded in this profile.": "이 프로필에서 라우터가 기록한 결과입니다.",
-  "Set by route_explore comparisons or /route prefer.": "route_explore 비교나 /route prefer로 설정됩니다.",
-  "default": "기본",
-  "Allowed models": "허용 모델",
-  "profile": "프로필",
-  "General": "일반",
-  "Routes": "경로",
-  "Stats": "통계",
-  "Rules": "규칙",
-  "Hybrid": "하이브리드",
+  "No tiers yet — nothing happens until you put models on the ladder.": "아직 티어가 없습니다 — 사다리에 모델을 넣기 전에는 아무 일도 하지 않습니다.",
+  "Ask a tier's models in parallel": "티어 안의 모델을 동시에 묻기",
+  "Off asks them one after another and stops at the first good answer.": "끄면 하나씩 차례로 묻고 첫 정상 답에서 멈춥니다.",
+  "Combine good answers": "정상 답 종합",
+  "When two or more models of a tier answer, one more call merges their answers. Skipped when time is short.":
+    "한 티어에서 둘 이상 정상 답이 나오면 한 번 더 호출해 합칩니다. 시간이 부족하면 건너뜁니다.",
+  "Enriched retry": "보강 재시도",
+  "After a tier fails on the request as written, ask it once more with your rules of engagement, an output contract when code was asked for, and the facts to keep. Framing terms are reworded and restored in the answer.":
+    "원문 요청에 티어가 모두 실패하면, 교전 규칙(ROE), 코드 요청일 때의 산출물 요구, 지켜야 할 사실을 붙여 한 번 더 묻습니다. 표현 순화는 답에서 원래대로 되돌립니다.",
+  "Move models that keep winning up": "자주 이기는 모델 승격",
+  "Learned from the attempt log. Never rewrites your tiers and never puts a model below where you placed it.":
+    "시도 기록으로 학습합니다. 설정한 티어를 고치지 않고, 넣은 자리보다 아래로 내리지 않습니다.",
+  "Hold replies": "답 보류(hold_stream)",
+  "Auto: on when tiers are set. Replies that end on a provider error can only be replaced while held. Holding turns off streaming. Restart the gateway to apply.":
+    "자동: 티어가 있으면 켭니다. 프로바이더 오류로 끝난 답은 보류 중일 때만 바꿀 수 있습니다. 보류하면 스트리밍이 꺼집니다. 게이트웨이를 재시작해야 적용됩니다.",
+  "Auto": "자동",
+  "On": "켬",
+  "Off": "끔",
+  "Time budget": "시간 예산",
+  "Seconds the ladder may spend, or auto (a few seconds inside the hook timeout).": "사다리가 쓸 수 있는 시간(초), 또는 auto(훅 시간 제한보다 몇 초 짧게).",
+  "Rules of engagement": "교전 규칙(ROE)",
+  "Target, scope, period, approver. Quoted in enriched retries; with none set, no authorization is ever claimed.":
+    "대상, 범위, 기간, 승인자. 보강 재시도에 그대로 인용됩니다. 비워 두면 권한에 대한 말은 전혀 넣지 않습니다.",
+  "e.g. Target 10.10.0.0/24 lab, 2026-11-01..30, approved SEC-123": "예: 대상 10.10.0.0/24 랩, 2026-11-01..30, 승인 SEC-123",
+  "Generic guardrail errors": "일반 가드레일 오류",
+  "Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail block.":
+    "프로바이더 오류에 \"content filter / safety / blocked by policy / cyber\"가 있으면 가드레일 차단으로 봅니다.",
+  "Models per comparison": "비교당 모델 수",
+  "The most models route_explore runs side by side (one subagent each).": "route_explore가 한 번에 나란히 돌리는 최대 모델 수(모델마다 서브에이전트 하나).",
+  "Warnings": "경고",
+  "Tier": "티어",
+  "Provider": "프로바이더",
   "Model": "모델",
-  "Quick": "간단",
-  "Standard": "일반",
-  "Code": "코드",
-  "Deep": "심층",
-  "Sec": "보안",
-  "Order": "순서",
-  "Short lookups, translation, summaries": "짧은 조회, 번역, 요약",
-  "Everyday writing and explanations": "일상적인 글쓰기와 설명",
-  "Writing, fixing and reviewing code": "코드 작성, 수정, 리뷰",
-  "Hard reasoning, design, analysis, long tasks": "어려운 추론, 설계, 분석, 긴 작업",
-  "CVE analysis, exploit/PoC, reversing, red team": "CVE 분석, 익스플로잇/PoC, 리버싱, 레드팀",
-  "Language of this plugin's screens.": "이 플러그인 화면의 언어입니다."
+  "Pick a provider first": "먼저 프로바이더를 고르세요",
+  "or": "또는",
+  "type provider/model": "provider/model 직접 입력",
+  "Add": "추가",
+  "Add tier": "티어 추가",
+  "Remove tier": "티어 삭제",
+  "Move up": "위로",
+  "Move down": "아래로",
+  "Remove": "삭제",
+  "Save ladder": "사다리 저장",
+  "Undo": "되돌리기",
+  "Unsaved changes. A running gateway reads tiers on the next turn.": "저장되지 않은 변경이 있습니다. 실행 중인 게이트웨이는 다음 턴부터 새 티어를 씁니다.",
+  "empty tiers are dropped on save": "빈 티어는 저장할 때 빠집니다",
+  "default": "기본",
+  "As used now (with promotions)": "지금 실제 순서(승격 포함)",
+  "(empty — its models were promoted)": "(비어 있음 — 모델이 승격됨)",
+  "No providers found": "프로바이더가 없습니다",
+  "This profile has no provider with credentials yet. Add one with `hermes model`, then come back.":
+    "이 프로필에는 자격 증명이 있는 프로바이더가 아직 없습니다. `hermes model`로 추가한 뒤 다시 오세요.",
+  "Models": "모델",
+  "Outcomes recorded when the ladder ran, last 20 per model.": "사다리가 돌 때 기록된 결과, 모델별 최근 20회.",
+  "No ladder attempts recorded yet.": "아직 기록된 사다리 시도가 없습니다.",
+  "as written": "원문",
+  "enriched": "보강",
+  "last failure": "마지막 실패",
+  "Refresh": "새로고침",
+  "Reset promotions": "승격 초기화",
+  "Click again to forget promotions": "한 번 더 누르면 승격을 지웁니다",
+  "The attempt log is kept; only learned promotions are cleared.": "시도 기록은 남고, 학습된 승격만 지워집니다."
 }
 const tr = s => ($lang.get() === 'ko' && KO[s]) || s
 const FN = {
@@ -140,33 +129,36 @@ const FN = {
     en: (p, e) => `Profile "${p}": install the model-router plugin and enable it for this profile (hermes -p ${p} plugins enable model-router), then restart its gateway. (${e})`,
     ko: (p, e) => `프로필 "${p}": model-router 플러그인을 설치하고 이 프로필에서 활성화한 뒤(hermes -p ${p} plugins enable model-router) 게이트웨이를 재시작하세요. (${e})`
   },
-  summary: {
-    en: (n, m) => `${n} provider${n === 1 ? '' : 's'}, ${m} model${m === 1 ? '' : 's'}: `,
-    ko: (n, m) => `프로바이더 ${n}개, 모델 ${m}개: `
+  ladderSummary: {
+    en: tiers => tiers.map((t, i) => `${i + 1}: ${t.map(m => m.key).join(', ') || '—'}`).join(' · '),
+    ko: tiers => tiers.map((t, i) => `${i + 1}: ${t.map(m => m.key).join(', ') || '—'}`).join(' · ')
   },
-  allowIntro: {
-    en: max => `Routing only ever uses what is checked here: at most ${max} providers, and on each only the checked models. A route, a pin, a learned preference or a comparison outside this list is ignored.`,
-    ko: max => `라우팅은 여기서 체크한 것만 사용합니다: 프로바이더는 최대 ${max}개, 각 프로바이더에서는 체크한 모델만. 이 목록 밖의 경로, 고정, 학습된 선호, 비교는 무시됩니다.`
+  time: {
+    en: (timeout, budget) => `Hook timeout ${timeout || 'off'}s, ladder budget ${budget}s.` + (timeout > 0 && timeout < 120 ? ' Raise plugins.hook_callback_timeout to 180–300 for longer answers.' : ''),
+    ko: (timeout, budget) => `훅 시간 제한 ${timeout || '없음'}초, 사다리 예산 ${budget}초.` + (timeout > 0 && timeout < 120 ? ' 긴 답을 위해 plugins.hook_callback_timeout을 180–300으로 올리세요.' : '')
   },
-  checked: { en: n => `${n} checked`, ko: n => `${n}개 선택됨` },
-  limit: { en: max => `limit of ${max} providers reached`, ko: max => `프로바이더 ${max}개 한도에 도달했습니다` },
-  learned: {
-    en: m => `★ Learned from a comparison: starts on ${m} (clear it under Stats)`,
-    ko: m => `★ 비교로 학습됨: ${m}에서 시작합니다 (통계에서 지울 수 있습니다)`
+  tierHelp: {
+    en: n => (n === 1 ? 'Asked first.' : `Asked after tier ${n - 1} fails.`),
+    ko: n => (n === 1 ? '가장 먼저 묻습니다.' : `${n - 1}티어가 실패하면 묻습니다.`)
   },
-  stat: {
-    en: (ok, fail, cool, why) => `${ok} ok · ${fail} failed` + (cool ? ` · cooling down ~${cool}m` : '') + (why ? ` · last failure: ${why}` : ''),
-    ko: (ok, fail, cool, why) => `${ok}회 성공 · ${fail}회 실패` + (cool ? ` · 쿨다운 약 ${cool}분` : '') + (why ? ` · 마지막 실패: ${why}` : '')
+  tooMany: {
+    en: max => `More than ${max} models run in parallel within one time budget.`,
+    ko: max => `${max}개가 넘는 모델이 한 시간 예산 안에서 동시에 돕니다.`
+  },
+  counts: {
+    en: r => (r && r.samples ? `${r.ok}/${r.samples} ok` + ['blocked', 'degraded', 'error'].filter(o => r[o]).map(o => `, ${r[o]} ${o}`).join('') : '—'),
+    ko: r => (r && r.samples ? `${r.samples}회 중 ${r.ok}회 성공` + [['blocked', '막힘'], ['degraded', '불완전'], ['error', '오류']].filter(([o]) => r[o]).map(([o, l]) => `, ${l} ${r[o]}`).join('') : '—')
+  },
+  intro: {
+    en: () => 'A blocked reply climbs the ladder: tier 1\'s models are asked first, all at once, then tier 2, and so on. Each tier is asked as written, then once more enriched. Within a tier, the order is the priority. Nothing off the ladder is ever called.',
+    ko: () => '막힌 답은 사다리를 오릅니다: 1티어 모델들에게 동시에 먼저 묻고, 실패하면 2티어, 그다음… 티어마다 원문으로 한 번, 보강해서 한 번 묻습니다. 티어 안의 순서가 우선순위입니다. 사다리 밖의 모델은 절대 부르지 않습니다.'
   }
 }
 const tf = (name, ...a) => FN[name][$lang.get() === 'ko' ? 'ko' : 'en'](...a)
 
-// Sub-pages also live in the Settings rail, folded under the entry; the rail can be collapsed or
-// scrolled away, so every page carries its own tabs too.
 const PAGES = [
   { id: '', label: 'General' },
-  { id: 'allowlist', label: 'Allowed models' },
-  { id: 'routes', label: 'Routes' },
+  { id: 'tiers', label: 'Tiers' },
   { id: 'stats', label: 'Stats' }
 ]
 const openPage = id => host.navigate?.(pluginSettingsHref ? pluginSettingsHref(ID, id || undefined) : '/settings?tab=plugins')
@@ -261,6 +253,14 @@ export default {
         })
       }
       const data = st.data
+      // Hermes loads the backend once per plugin host process, so right after an update this page
+      // can meet the previous version's backend. Say so instead of failing on missing fields.
+      if (!data || data.schema !== STATE_SCHEMA) {
+        return jsx(ErrorState, {
+          title: tr("Model Router backend is out of date"),
+          description: tr("The gateway is still serving the previous version of this plugin's backend. Restart it (hermes gateway restart), then reopen this page.")
+        })
+      }
       return jsxs('div', {
         className: 'flex flex-col',
         children: [
@@ -281,7 +281,7 @@ export default {
       })
     }
 
-    function TextRow({ title, description, value, onSave, placeholder }) {
+    function TextRow({ title, description, value, onSave, placeholder, width = 'w-64' }) {
       const [draft, setDraft] = useState(value || '')
       useEffect(() => setDraft(value || ''), [value])
       const commit = () => { if (draft !== (value || '')) onSave(draft) }
@@ -289,7 +289,7 @@ export default {
         title,
         description,
         action: jsx(Input, {
-          value: draft, placeholder, className: 'w-64',
+          value: draft, placeholder, className: width,
           onChange: e => setDraft(e.target.value),
           onBlur: commit,
           onKeyDown: e => { if (e.key === 'Enter') commit() }
@@ -297,7 +297,6 @@ export default {
       })
     }
 
-    // ── General ─────────────────────────────────────────────────────────────────────────────
     function NumberRow({ title, description, value, onSave, min, max }) {
       const [draft, setDraft] = useState(String(value))
       useEffect(() => setDraft(String(value)), [value])
@@ -318,12 +317,16 @@ export default {
       })
     }
 
+    // ── General ─────────────────────────────────────────────────────────────────────────────
     function General() {
       return jsx(Frame, {
         render: (data, st) => {
           const s = data.settings
-          const providers = Object.keys(s.scope)
-          const models = providers.reduce((n, p) => n + s.scope[p].length, 0)
+          const toggle = (key, label, description) =>
+            jsx(ToggleRow, {
+              label: tr(label), description: tr(description), checked: s[key], disabled: st.busy,
+              onChange: on => st.save({ [key]: on })
+            })
           return jsxs('div', {
             children: [
               jsx(ListRow, {
@@ -332,123 +335,50 @@ export default {
                 action: jsx(SegmentedControl, { options: LANGS, value: $lang.get(), onChange: setLang })
               }),
               jsx(ToggleRow, {
-                label: tr("Route each turn"),
-                description:
-                  tr("Pick a model and reasoning effort per request from the allowed models. Off leaves the session model alone."),
+                label: tr("Climb the ladder on blocked replies"),
+                description: tr("The profile's own model answers every turn. When a reply is blocked (a guardrail, a refusal, an answer without the requested code, a model error), the ladder's models are asked instead."),
                 checked: s.mode === 'auto',
                 disabled: st.busy,
                 onChange: on => st.save({ mode: on ? 'auto' : 'off' })
               }),
               jsx(ListRow, {
-                title: tr('Allowed models'),
-                action: jsx(Button, { variant: 'outline', size: 'xs', onClick: () => openPage('allowlist'), children: tr("Edit") }),
-                description: models
-                  ? tf('summary', providers.length, models) +
-                    providers.map(p => `${p} (${s.scope[p].join(', ')})`).join(' · ')
-                  : tr("Nothing allowed yet — routing does nothing until you check models under Allowed models.")
+                title: tr('Tier ladder'),
+                action: jsx(Button, { variant: 'outline', size: 'xs', onClick: () => openPage('tiers'), children: tr("Edit") }),
+                description: data.ladder.length
+                  ? tf('ladderSummary', data.ladder)
+                  : tr("No tiers yet — nothing happens until you put models on the ladder.")
               }),
+              toggle('parallel', "Ask a tier's models in parallel", "Off asks them one after another and stops at the first good answer."),
+              toggle('synthesize', "Combine good answers", "When two or more models of a tier answer, one more call merges their answers. Skipped when time is short."),
+              toggle('enrich_on_retry', "Enriched retry", "After a tier fails on the request as written, ask it once more with your rules of engagement, an output contract when code was asked for, and the facts to keep. Framing terms are reworded and restored in the answer."),
+              toggle('auto_promote', "Move models that keep winning up", "Learned from the attempt log. Never rewrites your tiers and never puts a model below where you placed it."),
               jsx(ListRow, {
-                title: tr("Task classifier"),
-                description:
-                  tr("Rules: keywords and length, no extra call. Hybrid: asks a model only when rules are unsure. Model: always asks."),
+                title: tr("Hold replies"),
+                description: tr("Auto: on when tiers are set. Replies that end on a provider error can only be replaced while held. Holding turns off streaming. Restart the gateway to apply."),
                 action: jsx(SegmentedControl, {
-                  options: CLASSIFIERS.map(o => ({ ...o, label: tr(o.label) })), value: s.classifier, disabled: st.busy,
-                  onChange: v => st.save({ classifier: v })
+                  options: HOLD_OPTIONS.map(o => ({ ...o, label: tr(o.label) })), value: s.hold_stream, disabled: st.busy,
+                  onChange: v => st.save({ hold_stream: v })
                 })
               }),
-              jsx(ToggleRow, {
-                label: tr("Move the session across providers"),
-                description:
-                  tr("Off: models change only within the provider the session is on (public plugin API). On: the session moves to another allowed provider when the route says so. Uses Hermes internals and may break after an update; it falls back to off when they are missing."),
-                checked: s.cross_provider,
-                disabled: st.busy,
-                onChange: on => st.save({ cross_provider: on })
+              jsx(TextRow, {
+                title: tr("Time budget"),
+                description: [tr("Seconds the ladder may spend, or auto (a few seconds inside the hook timeout)."), ' ',
+                  tf('time', data.time.hook_timeout, data.time.budget)].join(''),
+                value: s.retry_budget_seconds, placeholder: 'auto', width: 'w-24',
+                onSave: v => st.save({ retry_budget_seconds: v || 'auto' })
               }),
-              jsx(ToggleRow, {
-                label: tr("Re-answer soft refusals"),
-                description: tr("A short \"I can't help with that\" reply is answered again by another allowed model (without tools)."),
-                checked: s.soft_refusal_retry,
-                disabled: st.busy,
-                onChange: on => st.save({ soft_refusal_retry: on })
+              jsx(TextRow, {
+                title: tr("Rules of engagement"),
+                description: tr("Target, scope, period, approver. Quoted in enriched retries; with none set, no authorization is ever claimed."),
+                value: s.security_roe, placeholder: tr("e.g. Target 10.10.0.0/24 lab, 2026-11-01..30, approved SEC-123"),
+                onSave: v => st.save({ security_roe: v })
               }),
-              jsx(NumberRow, {
-                title: tr("Cool-down (minutes)"),
-                description: tr("A model that fails twice in a row moves to the back of every route for this long."),
-                value: s.cooldown_minutes, min: 0, max: 1440,
-                onSave: v => st.save({ cooldown_minutes: v })
-              }),
+              toggle('security_guardrail_defaults', "Generic guardrail errors", "Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail block."),
               jsx(NumberRow, {
                 title: tr("Models per comparison"),
                 description: tr("The most models route_explore runs side by side (one subagent each)."),
                 value: s.max_explore, min: 1, max: 8,
                 onSave: v => st.save({ max_explore: v })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Redo security answers without code"),
-                description:
-                  tr("On security turns, an answer asked for a PoC or code but delivered prose is retried on another allowed model with an output contract."),
-                checked: s.degraded_retry,
-                disabled: st.busy,
-                onChange: on => st.save({ degraded_retry: on })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Security preamble"),
-                description:
-                  tr("On security turns, put authorization, an output contract (runnable PoC, exact offsets, no hedging) and a CVE workflow into the system prompt. Does not remove provider guardrails."),
-                checked: s.security_preamble,
-                disabled: st.busy,
-                onChange: on => st.save({ security_preamble: on })
-              }),
-              jsx(TextRow, {
-                title: tr("Rules of engagement"),
-                description: tr("Target, period, scope, contacts. Models refuse less when authorization is explicit."),
-                value: s.security_roe, placeholder: tr("e.g. Target 10.10.0.0/24, 2026-11-01..11-30, authorized"),
-                onSave: v => st.save({ security_roe: v })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Generic guardrail errors"),
-                description:
-                  tr("Treat \"content filter / safety / blocked by policy / cyber\" in a provider error as a guardrail and move to the next allowed model."),
-                checked: s.security_guardrail_defaults,
-                disabled: st.busy,
-                onChange: on => st.save({ security_guardrail_defaults: on })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Guardrail round-trip"),
-                description:
-                  tr("After a refusal, rephrase the request (framing terms only; CVE ids, versions and offsets stay verbatim), retry, then restore the answer to your terms. Escalates L1 wording -> L2 walkthrough -> L3 analysis/code split."),
-                checked: s.security_sanitize,
-                disabled: st.busy,
-                onChange: on => st.save({ security_sanitize: on })
-              }),
-              jsx(NumberRow, {
-                title: tr("Highest sanitize level"),
-                description: tr("1: wording only. 2: + walkthrough structure. 3: + split into analysis and code."),
-                value: s.security_sanitize_max_level, min: 1, max: 3,
-                onSave: v => st.save({ security_sanitize_max_level: v })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Retry the refused model first"),
-                description: tr("Use the next level on the model that refused before switching to another one."),
-                checked: s.security_sanitize_retry_same_model,
-                disabled: st.busy,
-                onChange: on => st.save({ security_sanitize_retry_same_model: on })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Lock facts"),
-                description:
-                  tr("Never substitute CVE ids, versions, offsets, hashes or symbols; if the answer drops one, retry with the missing facts listed."),
-                checked: s.security_fact_lock,
-                disabled: st.busy,
-                onChange: on => st.save({ security_fact_lock: on })
-              }),
-              jsx(ToggleRow, {
-                label: tr("Model-assisted rephrase"),
-                description:
-                  tr("At L2+, let a model reword the request first (one structured call). Deterministic rules remain the fallback."),
-                checked: s.security_sanitize_llm,
-                disabled: st.busy,
-                onChange: on => st.save({ security_sanitize_llm: on })
               }),
               data.warnings.length
                 ? jsxs('div', {
@@ -469,207 +399,175 @@ export default {
       })
     }
 
-    // ── Allowed models ──────────────────────────────────────────────────────────────────────
-    function AllowlistEditor({ data, st }) {
-      const max = data.limits.max_providers
-      const saved = data.settings.scope
-      const [draft, setDraft] = useState(saved)
-      const [adding, setAdding] = useState({})
-      useEffect(() => setDraft(saved), [JSON.stringify(saved)])
+    // ── Tiers ───────────────────────────────────────────────────────────────────────────────
+    function TierEditor({ data, st }) {
+      const saved = data.settings.tiers
+      const [draft, setDraft] = useState(saved.length ? saved : [[]])
+      const [prov, setProv] = useState({})     // tier -> provider picked in its "add" row
+      const [model, setModel] = useState({})   // tier -> model picked for that provider
+      const [typed, setTyped] = useState({})
+      useEffect(() => setDraft(saved.length ? saved : [[]]), [JSON.stringify(saved)])
 
-      const providers = [...new Set([...Object.keys(saved), ...Object.keys(data.inventory)])]
-      const checked = Object.keys(draft)
-      const full = checked.length >= max
-      const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
+      // provider/model: the provider is the first segment; the model may contain "/" itself.
+      const split = key => [key.slice(0, key.indexOf('/')), key.slice(key.indexOf('/') + 1)]
+      const placed = new Set(draft.flat())
+      const catalog = {}
+      for (const [p, ms] of Object.entries(data.inventory)) catalog[p] = [...ms]
+      for (const key of saved.flat()) {
+        const [p, m] = split(key)
+        catalog[p] = catalog[p] || []
+        if (!catalog[p].includes(m)) catalog[p].push(m)
+      }
+      const providers = Object.keys(catalog)
+      const freeModels = p => (catalog[p] || []).filter(m => !placed.has(`${p}/${m}`))
+      const known = providers.length
+      const cleaned = draft.filter(t => t.length)
+      const dirty = JSON.stringify(cleaned) !== JSON.stringify(saved)
+      const isDefault = key => key === `${data.current.provider}/${data.current.model}`
+      const promoted = data.promotions || {}
 
-      const toggleProvider = (p, on) => {
-        const next = { ...draft }
-        if (on) next[p] = saved[p] || []
-        else delete next[p]
-        setDraft(next)
+      const setTier = (i, models) => setDraft(draft.map((t, j) => (j === i ? models : t)))
+      const move = (i, k, by) => {
+        const models = [...draft[i]]
+        const [m] = models.splice(k, 1)
+        models.splice(k + by, 0, m)
+        setTier(i, models)
       }
-      const toggleModel = (p, m, on) => {
-        const cur = draft[p] || []
-        setDraft({ ...draft, [p]: on ? [...cur, m] : cur.filter(x => x !== m) })
+      const add = (i, key) => {
+        const k = String(key || '').trim()
+        if (!k || !k.includes('/') || placed.has(k)) return
+        setTier(i, [...draft[i], k])
+        setModel({ ...model, [i]: '' })
+        setTyped({ ...typed, [i]: '' })
       }
-      const addModel = p => {
-        const m = String(adding[p] || '').trim()
-        if (!m) return
-        const cur = draft[p] || []
-        if (!cur.includes(m)) setDraft({ ...draft, [p]: [...cur, m] })
-        setAdding({ ...adding, [p]: '' })
-      }
-      const save = () => {
-        const scope = {}
-        for (const p of Object.keys(draft)) if ((draft[p] || []).length) scope[p] = draft[p]
-        const allowed = new Set(Object.entries(scope).flatMap(([p, ms]) => ms.map(m => `${p}/${m}`)))
-        const routes = {}
-        for (const [cls, entries] of Object.entries(data.settings.routes || {})) {
-          const keep = entries.filter(e => allowed.has(keyOf(e)))
-          if (keep.length) routes[cls] = keep
-        }
-        st.save({ scope, routes })
+      const pickProvider = (i, p) => {
+        setProv({ ...prov, [i]: p })
+        setModel({ ...model, [i]: '' })
       }
 
-      if (!providers.length) {
+      if (!known && !draft.flat().length) {
         return jsx(EmptyState, {
           title: tr("No providers found"),
           description: tr("This profile has no provider with credentials yet. Add one with `hermes model`, then come back.")
         })
       }
 
-      return jsxs('div', {
-        children: [
-          jsx(Muted, {
-            className: 'mb-3',
-            children:
-              tf('allowIntro', max)
-          }),
-          ...providers.map(p => {
-            const on = p in draft
-            const known = [...new Set([...(data.inventory[p] || []), ...(saved[p] || []), ...(draft[p] || [])])]
-            const isCurrent = data.current.provider === p
-            return jsxs('div', {
-              key: p,
-              className: 'border-t border-(--ui-stroke-secondary) py-3',
+      const tierBox = (models, i) =>
+        jsxs('div', {
+          key: i,
+          className: 'border-t border-(--ui-stroke-secondary) py-3',
+          children: [
+            jsxs('div', {
+              className: 'flex items-center gap-2',
               children: [
-                jsxs('label', {
-                  className: 'flex cursor-pointer items-center gap-2',
-                  children: [
-                    jsx(Checkbox, {
-                      checked: on,
-                      disabled: !on && full,
-                      onCheckedChange: v => toggleProvider(p, v === true)
-                    }),
-                    jsx('span', { className: 'text-sm font-medium', children: p }),
-                    isCurrent ? jsx(Badge, { variant: 'muted', children: tr("session provider") }) : null,
-                    on ? jsx(Muted, { children: tf('checked', (draft[p] || []).length) }) : null,
-                    !on && full ? jsx(Muted, { children: tf('limit', max) }) : null
-                  ]
-                }),
-                on
-                  ? jsxs('div', {
-                      className: 'mt-2 ml-6 flex flex-col gap-1.5',
-                      children: [
-                        ...known.map(m =>
-                          jsxs('label', {
-                            key: m,
-                            className: 'flex cursor-pointer items-center gap-2 text-sm',
-                            children: [
-                              jsx(Checkbox, {
-                                checked: (draft[p] || []).includes(m),
-                                onCheckedChange: v => toggleModel(p, m, v === true)
-                              }),
-                              jsx('span', { className: 'font-mono text-xs', children: m }),
-                              data.current.provider === p && data.current.model === m
-                                ? jsx(Badge, { variant: 'muted', size: 'xs', children: tr('default') })
-                                : null
-                            ]
-                          })),
-                        jsxs('div', {
-                          className: 'mt-1 flex items-center gap-2',
-                          children: [
-                            jsx(Input, {
-                              placeholder: tr("Add a model id"), className: 'h-7 w-64 text-xs',
-                              value: adding[p] || '',
-                              onChange: e => setAdding({ ...adding, [p]: e.target.value }),
-                              onKeyDown: e => { if (e.key === 'Enter') addModel(p) }
-                            }),
-                            jsx(Button, { variant: 'outline', size: 'xs', onClick: () => addModel(p), children: tr("Add") })
-                          ]
-                        }),
-                        (draft[p] || []).length === 0
-                          ? jsx(Muted, { children: tr("Check at least one model, or this provider is not saved.") })
-                          : null
-                      ]
-                    })
+                jsx('span', { className: 'text-sm font-semibold', children: `${tr('Tier')} ${i + 1}` }),
+                jsx(Muted, { children: tf('tierHelp', i + 1) }),
+                models.length > data.limits.tier_size_hint ? jsx(Badge, { variant: 'warn', size: 'xs', children: tf('tooMany', data.limits.tier_size_hint) }) : null,
+                jsx('div', { className: 'flex-1' }),
+                draft.length > 1
+                  ? jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => setDraft(draft.filter((_, j) => j !== i)), children: tr("Remove tier") })
                   : null
               ]
+            }),
+            jsx('div', {
+              className: 'mt-2 ml-2 flex flex-col gap-1',
+              children: models.map((key, k) =>
+                jsxs('div', {
+                  key,
+                  className: 'flex items-center gap-2 text-sm',
+                  children: [
+                    jsx('span', { className: 'w-5 text-right text-xs text-(--ui-text-tertiary)', children: `${k + 1}.` }),
+                    jsx('span', { className: 'font-mono text-xs', style: CLIP, title: key, children: key }),
+                    isDefault(key) ? jsx(Badge, { variant: 'muted', size: 'xs', children: tr('default') }) : null,
+                    promoted[key] ? jsx(Badge, { variant: 'success', size: 'xs', children: `↑${promoted[key]}` }) : null,
+                    jsx('div', { className: 'flex-1' }),
+                    jsx(Button, { variant: 'ghost', size: 'xs', disabled: k === 0, title: tr('Move up'), onClick: () => move(i, k, -1), children: '↑' }),
+                    jsx(Button, { variant: 'ghost', size: 'xs', disabled: k === models.length - 1, title: tr('Move down'), onClick: () => move(i, k, 1), children: '↓' }),
+                    jsx(Button, { variant: 'ghost', size: 'xs', title: tr('Remove'), onClick: () => setTier(i, models.filter(m => m !== key)), children: '✕' })
+                  ]
+                }))
+            }),
+            jsxs('div', {
+              className: 'mt-2 ml-2 flex flex-wrap items-center gap-2',
+              children: [
+                jsxs(Select, {
+                  value: prov[i] || '', onValueChange: v => pickProvider(i, v),
+                  children: [
+                    jsx(SelectTrigger, {
+                      className: 'h-7 text-xs', style: { width: 240, maxWidth: '100%', ...CLIP },
+                      title: prov[i] || undefined,
+                      children: jsx(SelectValue, {
+                        placeholder: tr("Provider"),
+                        children: prov[i] ? clipped(`${prov[i]} (${freeModels(prov[i]).length})`) : undefined
+                      })
+                    }),
+                    jsx(SelectContent, {
+                      children: providers.map(p =>
+                        jsx(SelectItem, { key: p, value: p, children: `${p} (${freeModels(p).length})` }))
+                    })
+                  ]
+                }),
+                jsxs(Select, {
+                  value: model[i] || '', disabled: !prov[i] || !freeModels(prov[i]).length,
+                  onValueChange: v => setModel({ ...model, [i]: v }),
+                  children: [
+                    jsx(SelectTrigger, {
+                      className: 'h-7 text-xs', style: { width: 300, maxWidth: '100%', ...CLIP },
+                      title: model[i] || undefined,
+                      children: jsx(SelectValue, {
+                        placeholder: prov[i] ? tr("Model") : tr("Pick a provider first"),
+                        children: model[i] ? clipped(model[i]) : undefined
+                      })
+                    }),
+                    jsx(SelectContent, {
+                      children: (prov[i] ? freeModels(prov[i]) : []).map(m =>
+                        jsx(SelectItem, { key: m, value: m, children: m }))
+                    })
+                  ]
+                }),
+                jsx(Button, {
+                  variant: 'outline', size: 'xs', disabled: !prov[i] || !model[i],
+                  onClick: () => add(i, `${prov[i]}/${model[i]}`), children: tr("Add")
+                }),
+                jsx(Muted, { children: tr("or") }),
+                jsx(Input, {
+                  placeholder: tr("type provider/model"), className: 'h-7 w-56 text-xs',
+                  value: typed[i] || '',
+                  onChange: e => setTyped({ ...typed, [i]: e.target.value }),
+                  onKeyDown: e => { if (e.key === 'Enter') add(i, typed[i]) }
+                }),
+                jsx(Button, { variant: 'outline', size: 'xs', onClick: () => add(i, typed[i]), children: tr("Add") })
+              ]
             })
-          }),
+          ]
+        })
+
+      return jsxs('div', {
+        children: [
+          jsx(Muted, { className: 'mb-3', children: tf('intro') }),
+          ...draft.map(tierBox),
+          jsx(Button, { variant: 'outline', size: 'xs', className: 'mt-1 self-start', onClick: () => setDraft([...draft, []]), children: tr("Add tier") }),
           jsxs('div', {
-            className: 'mt-4 flex items-center gap-2',
+            className: 'mt-4 flex flex-wrap items-center gap-2',
             children: [
-              jsx(Button, { disabled: !dirty || st.busy, onClick: save, children: tr("Save allowlist") }),
-              jsx(Button, { variant: 'ghost', disabled: !dirty || st.busy, onClick: () => setDraft(saved), children: tr("Undo") }),
-              dirty ? jsx(Muted, { children: tr("Unsaved changes. Running sessions pick them up on their next turn.") }) : null
+              jsx(Button, { disabled: !dirty || st.busy, onClick: () => st.save({ tiers: cleaned }), children: tr("Save ladder") }),
+              jsx(Button, { variant: 'ghost', disabled: !dirty || st.busy, onClick: () => setDraft(saved.length ? saved : [[]]), children: tr("Undo") }),
+              dirty ? jsx(Muted, { children: `${tr("Unsaved changes. A running gateway reads tiers on the next turn.")} (${tr("empty tiers are dropped on save")})` }) : null
             ]
-          })
+          }),
+          data.ladder.length && Object.keys(promoted).length
+            ? jsxs('div', {
+                children: [
+                  jsx(Heading, { title: tr("As used now (with promotions)") }),
+                  ...data.ladder.map((tier, i) =>
+                    jsx(Muted, {
+                      key: i,
+                      children: `${tr('Tier')} ${i + 1}: ` + (tier.map(m => (m.promoted ? `${m.key} ↑${m.promoted}` : m.key)).join(', ') || tr("(empty — its models were promoted)"))
+                    }))
+                ]
+              })
+            : null
         ]
-      })
-    }
-
-    // ── Routes ──────────────────────────────────────────────────────────────────────────────
-    function RouteRow({ cls, data, st, allowed }) {
-      const explicit = (data.settings.routes || {})[cls] || []
-      const effective = data.effective_routes[cls] || []
-      const first = explicit[0] || effective[0] || ''
-      const [model, setModel] = useState(keyOf(first))
-      const [effort, setEffort] = useState(effortOf(first) || data.limits.default_effort[cls])
-      useEffect(() => {
-        setModel(keyOf(first))
-        setEffort(effortOf(first) || data.limits.default_effort[cls])
-      }, [first])
-      const dirty = model !== keyOf(first) || effort !== (effortOf(first) || data.limits.default_effort[cls])
-      const save = () => {
-        const head = `${model}@${effort}`
-        const rest = explicit.filter(e => keyOf(e) !== model)
-        st.save({ routes: { ...(data.settings.routes || {}), [cls]: [head, ...rest] } })
-      }
-      const select = (value, onChange, items, width) =>
-        jsxs(Select, {
-          value, onValueChange: onChange,
-          children: [
-            jsx(SelectTrigger, { className: `h-7 ${width} text-xs`, children: jsx(SelectValue, {}) }),
-            jsx(SelectContent, { children: items.map(i => jsx(SelectItem, { key: i, value: i, children: i })) })
-          ]
-        })
-      const preferred = data.preferred[cls]
-      return jsx(ListRow, {
-        title: tr(`${cls[0].toUpperCase()}${cls.slice(1)}`),
-        description: tr(CLASS_HELP[cls]),
-        below: jsxs('div', {
-          className: 'mt-1 flex flex-col gap-0.5',
-          children: [
-            jsx(Muted, { children: `${tr('Order')}: ${effective.join(' → ') || '—'}` }),
-            preferred
-              ? jsx(Muted, { children: tf('learned', preferred) })
-              : null
-          ]
-        }),
-        action: jsxs('div', {
-          className: 'flex flex-wrap items-center gap-2',
-          children: [
-            select(model, setModel, allowed, 'w-56'),
-            select(effort, setEffort, data.limits.efforts, 'w-24'),
-            jsx(Button, { size: 'xs', disabled: !dirty || st.busy || !model, onClick: save, children: tr("Save") })
-          ]
-        })
-      })
-    }
-
-    function Routes() {
-      return jsx(Frame, {
-        page: 'routes',
-        render: (data, st) => {
-          const allowed = Object.entries(data.settings.scope).flatMap(([p, ms]) => ms.map(m => `${p}/${m}`))
-          if (!allowed.length) {
-            return jsx(EmptyState, {
-              title: tr("No allowed models yet"),
-              description: tr("Check providers and models under Allowed models first.")
-            })
-          }
-          return jsxs('div', {
-            children: [
-              jsx(Muted, {
-                className: 'mb-2',
-                children:
-                  tr("Pick the model each kind of task tries first and its reasoning effort. The other allowed models follow automatically as backups when a model is stopped by a guardrail, a refusal or an error.")
-              }),
-              ...data.limits.task_classes.map(cls => jsx(RouteRow, { key: cls, cls, data, st, allowed }))
-            ]
-          })
-        }
       })
     }
 
@@ -679,43 +577,34 @@ export default {
       return jsx(Frame, {
         page: 'stats',
         render: (data, st) => {
-          const rows = Object.entries(data.health).sort(([a], [b]) => a.localeCompare(b))
-          const prefs = Object.entries(data.preferred)
+          const rows = Object.entries(data.stats).sort(([a], [b]) => a.localeCompare(b))
+          const promoted = data.promotions || {}
           return jsxs('div', {
             children: [
-              jsx(Heading, { title: tr("Models"), children: tr("Outcomes the router recorded in this profile.") }),
+              jsx(Heading, { title: tr("Models"), children: tr("Outcomes recorded when the ladder ran, last 20 per model.") }),
               rows.length
                 ? jsx('div', {
                     className: 'flex flex-col',
-                    children: rows.map(([key, h]) => {
-                      const cooling = data.cooling[key]
-                      const tone = cooling ? 'bad' : (h.streak || 0) > 0 ? 'warn' : 'good'
+                    children: rows.map(([key, r]) => {
+                      const plain = r.plain || {}
+                      const rate = plain.samples ? plain.ok / plain.samples : null
+                      const tone = rate === null ? 'warn' : rate >= 0.6 ? 'good' : rate >= 0.4 ? 'warn' : 'bad'
                       return jsx(ListRow, {
                         key,
                         title: jsxs('span', {
                           className: 'flex items-center gap-2',
-                          children: [jsx(StatusDot, { tone }), jsx('span', { className: 'font-mono text-xs', children: key })]
+                          children: [
+                            jsx(StatusDot, { tone }),
+                            jsx('span', { className: 'font-mono text-xs', children: key }),
+                            promoted[key] ? jsx(Badge, { variant: 'success', size: 'xs', children: `↑${promoted[key]}` }) : null
+                          ]
                         }),
-                        description:
-                          tf('stat', h.ok || 0, h.fail || 0, cooling, h.last_reason)
+                        description: `${tr('as written')}: ${tf('counts', r.plain)} · ${tr('enriched')}: ${tf('counts', r.enrich)}` +
+                          (r.last_failure ? ` · ${tr('last failure')}: ${r.last_failure}` : '')
                       })
                     })
                   })
-                : jsx(Muted, { children: tr("No outcomes yet.") }),
-              jsx(Heading, { title: tr("Learned preferences"), children: tr("Set by route_explore comparisons or /route prefer.") }),
-              prefs.length
-                ? jsx('div', {
-                    children: prefs.map(([cls, cand]) =>
-                      jsx(ListRow, {
-                        key: cls, title: cls, description: cand,
-                        action: jsx(Button, {
-                          variant: 'outline', size: 'xs', disabled: st.busy,
-                          onClick: () => st.call('/prefer', 'POST', { task_class: cls, candidate: null }),
-                          children: tr("Clear")
-                        })
-                      }))
-                  })
-                : jsx(Muted, { children: tr("None.") }),
+                : jsx(Muted, { children: tr("No ladder attempts recorded yet.") }),
               jsxs('div', {
                 className: 'mt-4 flex items-center gap-2',
                 children: [
@@ -727,8 +616,9 @@ export default {
                       setConfirm(false)
                       await st.call('/reset', 'POST', {})
                     },
-                    children: confirm ? tr("Click again to forget everything") : tr("Reset stats and preferences")
-                  })
+                    children: confirm ? tr("Click again to forget promotions") : tr("Reset promotions")
+                  }),
+                  jsx(Muted, { children: tr("The attempt log is kept; only learned promotions are cleared.") })
                 ]
               })
             ]
@@ -753,8 +643,7 @@ export default {
         icon: 'type-hierarchy',
         render: () => jsx(General, {}),
         children: [
-          { id: 'allowlist', title: tr('Allowed models'), render: () => jsx(Frame, { page: 'allowlist', render: (data, st) => jsx(AllowlistEditor, { data, st }) }) },
-          { id: 'routes', title: tr('Routes'), render: () => jsx(Routes, {}) },
+          { id: 'tiers', title: tr('Tiers'), render: () => jsx(Frame, { page: 'tiers', render: (data, st) => jsx(TierEditor, { data, st }) }) },
           { id: 'stats', title: tr('Stats'), render: () => jsx(Stats, {}) }
         ]
       })

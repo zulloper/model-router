@@ -90,11 +90,7 @@ class FakeCtx:
         self.cli[name] = (setup_fn, handler_fn)
 
 
-SCOPE = {"openai-codex": ["gpt-6.2-sol", "gpt-mini"], "anthropic": ["claude-opus-4-8"]}
-ROUTES = {
-    "quick": ["openai-codex/gpt-mini@low"],
-    "deep": ["anthropic/claude-opus-4-8@high", "openai-codex/gpt-6.2-sol@xhigh"],
-}
+TIERS = [["openai-codex/gpt-6.2-sol", "openai-codex/gpt-mini"], ["anthropic/claude-opus-4-8"]]
 
 
 @pytest.fixture
@@ -104,7 +100,7 @@ def pkg():
 
 @pytest.fixture
 def ctx():
-    return FakeCtx({"scope": SCOPE, "routes": ROUTES})
+    return FakeCtx({"tiers": TIERS})
 
 
 @pytest.fixture

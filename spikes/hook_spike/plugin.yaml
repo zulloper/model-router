@@ -1,0 +1,16 @@
+name: mr-spike
+label: Model Router spike (temporary)
+kind: standalone
+version: 0.0.1
+manifest_version: 2
+api_version: 1
+author: zulloper
+license: MIT
+description: >
+  Temporary measurement plugin for the model-router 0.4.0 redesign (DESIGN.md §11 S1-S3).
+  Does nothing unless the user message contains an [mr-spike ...] marker. Uses only the
+  active model (no model/provider override), so it needs no capabilities.
+requires_hermes: ">=0.22.5"
+provides_hooks:
+  - pre_llm_call
+  - transform_llm_output
