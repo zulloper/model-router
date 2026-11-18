@@ -22,7 +22,8 @@ const CLASS_HELP = {
   quick: 'Short lookups, translation, summaries',
   standard: 'Everyday writing and explanations',
   code: 'Writing, fixing and reviewing code',
-  deep: 'Hard reasoning, design, analysis, long tasks'
+  deep: 'Hard reasoning, design, analysis, long tasks',
+  sec: 'CVE analysis, exploit/PoC, reversing, red team'
 }
 const CLASSIFIERS = [
   { id: 'rules', label: 'Rules' },
@@ -154,6 +155,22 @@ export default {
       })
     }
 
+    function TextRow({ title, description, value, onSave, placeholder }) {
+      const [draft, setDraft] = useState(value || '')
+      useEffect(() => setDraft(value || ''), [value])
+      const commit = () => { if (draft !== (value || '')) onSave(draft) }
+      return jsx(ListRow, {
+        title,
+        description,
+        action: jsx(Input, {
+          value: draft, placeholder, className: 'w-64',
+          onChange: e => setDraft(e.target.value),
+          onBlur: commit,
+          onKeyDown: e => { if (e.key === 'Enter') commit() }
+        })
+      })
+    }
+
     // ── General ─────────────────────────────────────────────────────────────────────────────
     function NumberRow({ title, description, value, onSave, min, max }) {
       const [draft, setDraft] = useState(String(value))
@@ -236,6 +253,80 @@ export default {
                 description: 'The most models route_explore runs side by side (one subagent each).',
                 value: s.max_explore, min: 1, max: 8,
                 onSave: v => st.save({ max_explore: v })
+              }),
+              jsx(ToggleRow, {
+                label: 'Redo security answers without code',
+                description:
+                  'On security turns, an answer asked for a PoC or code but delivered prose is retried on another ' +
+                  'allowed model with an output contract.',
+                checked: s.degraded_retry,
+                disabled: st.busy,
+                onChange: on => st.save({ degraded_retry: on })
+              }),
+              jsx(ToggleRow, {
+                label: 'Security preamble',
+                description:
+                  'On security turns, put authorization, an output contract (runnable PoC, exact offsets, no hedging) ' +
+                  'and a CVE workflow into the system prompt. Does not remove provider guardrails.',
+                checked: s.security_preamble,
+                disabled: st.busy,
+                onChange: on => st.save({ security_preamble: on })
+              }),
+              jsx(TextRow, {
+                title: 'Rules of engagement',
+                description: 'Target, period, scope, contacts. Models refuse less when authorization is explicit.',
+                value: s.security_roe, placeholder: 'e.g. Target 10.10.0.0/24, 2026-11-01..11-30, authorized',
+                onSave: v => st.save({ security_roe: v })
+              }),
+              jsx(ToggleRow, {
+                label: 'Generic guardrail errors',
+                description:
+                  'Treat "content filter / safety / blocked by policy / cyber" in a provider error as a guardrail and ' +
+                  'move to the next allowed model.',
+                checked: s.security_guardrail_defaults,
+                disabled: st.busy,
+                onChange: on => st.save({ security_guardrail_defaults: on })
+              }),
+              jsx(ToggleRow, {
+                label: 'Guardrail round-trip',
+                description:
+                  'After a refusal, rephrase the request (framing terms only; CVE ids, versions and offsets stay ' +
+                  'verbatim), retry, then restore the answer to your terms. Escalates L1 wording -> L2 walkthrough -> ' +
+                  'L3 analysis/code split.',
+                checked: s.security_sanitize,
+                disabled: st.busy,
+                onChange: on => st.save({ security_sanitize: on })
+              }),
+              jsx(NumberRow, {
+                title: 'Highest sanitize level',
+                description: '1: wording only. 2: + walkthrough structure. 3: + split into analysis and code.',
+                value: s.security_sanitize_max_level, min: 1, max: 3,
+                onSave: v => st.save({ security_sanitize_max_level: v })
+              }),
+              jsx(ToggleRow, {
+                label: 'Retry the refused model first',
+                description: 'Use the next level on the model that refused before switching to another one.',
+                checked: s.security_sanitize_retry_same_model,
+                disabled: st.busy,
+                onChange: on => st.save({ security_sanitize_retry_same_model: on })
+              }),
+              jsx(ToggleRow, {
+                label: 'Lock facts',
+                description:
+                  'Never substitute CVE ids, versions, offsets, hashes or symbols; if the answer drops one, retry ' +
+                  'with the missing facts listed.',
+                checked: s.security_fact_lock,
+                disabled: st.busy,
+                onChange: on => st.save({ security_fact_lock: on })
+              }),
+              jsx(ToggleRow, {
+                label: 'Model-assisted rephrase',
+                description:
+                  'At L2+, let a model reword the request first (one structured call). Deterministic rules remain ' +
+                  'the fallback.',
+                checked: s.security_sanitize_llm,
+                disabled: st.busy,
+                onChange: on => st.save({ security_sanitize_llm: on })
               }),
               data.warnings.length
                 ? jsxs('div', {

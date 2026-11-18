@@ -31,9 +31,19 @@ class Settings:
     cross_provider: bool
     classifier: str
     soft_refusal_retry: bool
+    degraded_retry: bool
     cooldown_minutes: int
     max_explore: int
     extra_guardrail_patterns: tuple[str, ...]
+    security_preamble: bool
+    security_roe: str
+    security_preamble_extra: str
+    security_guardrail_defaults: bool
+    security_sanitize: bool
+    security_sanitize_max_level: int
+    security_sanitize_llm: bool
+    security_sanitize_retry_same_model: bool
+    security_fact_lock: bool
     warnings: list[str]
 
     @property
@@ -54,9 +64,19 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         cross_provider=bool(get("cross_provider", False)),
         classifier=classifier if classifier in ("rules", "hybrid", "llm") else "rules",
         soft_refusal_retry=bool(get("soft_refusal_retry", True)),
+        degraded_retry=bool(get("degraded_retry", True)),
         cooldown_minutes=_as_int(get("cooldown_minutes", 30), 30),
         max_explore=max(1, min(8, _as_int(get("max_explore", 3), 3))),
         extra_guardrail_patterns=tuple(str(p).lower() for p in patterns if str(p).strip()),
+        security_preamble=bool(get("security_preamble", True)),
+        security_roe=str(get("security_roe", "") or ""),
+        security_preamble_extra=str(get("security_preamble_extra", "") or ""),
+        security_guardrail_defaults=bool(get("security_guardrail_defaults", True)),
+        security_sanitize=bool(get("security_sanitize", True)),
+        security_sanitize_max_level=max(1, min(3, _as_int(get("security_sanitize_max_level", 3), 3))),
+        security_sanitize_llm=bool(get("security_sanitize_llm", False)),
+        security_sanitize_retry_same_model=bool(get("security_sanitize_retry_same_model", True)),
+        security_fact_lock=bool(get("security_fact_lock", True)),
         warnings=scope.warnings + route_warnings,
     )
 
@@ -82,6 +102,14 @@ class TurnPlan:
     switched_provider: str = ""  # cross_provider: what the session was moved to, if anything
     failed: list[str] = dataclasses.field(default_factory=list)  # candidate keys
     events: list[str] = dataclasses.field(default_factory=list)
+    sanitize_level: int = 0
+    sanitize_tried: set[tuple[str, int]] = dataclasses.field(default_factory=set)
+    sanitized: bool = False
+    facts: list[str] = dataclasses.field(default_factory=list)
+    glossary: dict[str, str] = dataclasses.field(default_factory=dict)  # replacement -> original
+    rephrased_levels: set[int] = dataclasses.field(default_factory=set)
+    rephrased: dict[int, str] = dataclasses.field(default_factory=dict)
+    facts_retried: bool = False
     started: float = dataclasses.field(default_factory=time.time)
 
     def note(self, text: str) -> None:
@@ -98,6 +126,8 @@ class Router:
         self._turns: "OrderedDict[str, TurnPlan]" = OrderedDict()
         self._last_by_session: dict[str, str] = {}
         self._pins: dict[str, Candidate] = {}
+        self._sec: set[str] = set()  # sessions pinned to the sec task class (/route sec)
+        self._sec_level: dict[str, int] = {}  # session -> sanitize level that last worked
         self._escalate: dict[str, str] = {}  # session -> candidate key that just failed (soft refusal)
         self._health: dict[str, dict[str, Any]] = self._load("health", {})
         self._preferred: dict[str, str] = self._load("preferred", {})
@@ -183,23 +213,46 @@ class Router:
             tid = self._last_by_session.get(session_id or "")
             return self._turns.get(tid) if tid else None
 
-    def pick(self, plan: TurnPlan, provider: str) -> Optional[Candidate]:
+    def pick(self, plan: TurnPlan, provider: str, allow_retry: bool = False) -> Optional[Candidate]:
         """The candidate this provider request should use: the turn's current one while it hasn't
-        failed and sits on this provider, else the next unfailed one on this provider."""
+        failed and sits on this provider, else the next unfailed one on this provider.
+
+        ``allow_retry`` lets a candidate that failed this turn run once more at a new sanitize
+        level (guardrail round-trip); the (candidate, level) pair is recorded so it cannot loop.
+        """
         prov = (provider or "").strip().lower()
         with self._lock:
             cur = plan.current
-            if cur is not None and cur.provider == prov and cur.key not in plan.failed:
+
+            def eligible(c: Candidate) -> bool:
+                if c.key not in plan.failed:
+                    return True
+                return allow_retry and (c.key, plan.sanitize_level) not in plan.sanitize_tried
+
+            if cur is not None and cur.provider == prov and eligible(cur):
+                if cur.key in plan.failed:
+                    plan.sanitize_tried.add((cur.key, plan.sanitize_level))
+                    plan.note(f"↻ {cur} (sanitize L{plan.sanitize_level})")
                 return cur
-            nxt = next((c for c in plan.order if c.provider == prov and c.key not in plan.failed), None)
+            nxt = next((c for c in plan.order if c.provider == prov and eligible(c)), None)
+            if nxt is not None and nxt.key in plan.failed:
+                plan.sanitize_tried.add((nxt.key, plan.sanitize_level))
+                plan.note(f"↻ {nxt} (sanitize L{plan.sanitize_level})")
             if nxt is not None and (cur is None or nxt.key != cur.key):
                 plan.note(f"→ {nxt}")
             plan.current = nxt
             return nxt
 
-    def next_alternative(self, plan: TurnPlan, settings: Settings) -> Optional[Candidate]:
-        """Another allowed model (any allowed provider) that hasn't failed this turn."""
+    def next_alternative(self, plan: TurnPlan, settings: Settings,
+                         allow_retry: bool = False) -> Optional[Candidate]:
+        """Another allowed model (any allowed provider) that hasn't failed this turn. With
+        ``allow_retry`` the current model may be retried once at a new sanitize level first."""
         with self._lock:
+            cur = plan.current
+            if (allow_retry and cur is not None
+                    and (cur.key, plan.sanitize_level) not in plan.sanitize_tried):
+                plan.sanitize_tried.add((cur.key, plan.sanitize_level))
+                return cur
             for c in plan.order:
                 if c.key not in plan.failed and (plan.current is None or c.key != plan.current.key):
                     return c
@@ -257,6 +310,36 @@ class Router:
         with self._lock:
             return self._pins.get(session_id)
 
+    def set_sec(self, session_id: str, on: bool) -> None:
+        """Force this chat's turns onto the sec class (preamble included), or stop forcing."""
+        with self._lock:
+            self._sec_level.pop(session_id, None)
+            if on and session_id:
+                self._sec.add(session_id)
+            else:
+                self._sec.discard(session_id)
+
+    def sec_on(self, session_id: str) -> bool:
+        with self._lock:
+            return bool(session_id) and session_id in self._sec
+
+    def remember_level(self, session_id: str, level: int) -> None:
+        """Start later turns of a chat at the level that worked, so a model that refused is not
+        re-hit with the original wording every turn. L3 (the split) stays a within-turn escalation."""
+        with self._lock:
+            if session_id and level > 0:
+                self._sec_level[session_id] = min(level, 2)
+            else:
+                self._sec_level.pop(session_id, None)
+
+    def level_for(self, session_id: str) -> int:
+        with self._lock:
+            return self._sec_level.get(session_id, 0)
+
+    def sanitize_levels(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._sec_level)
+
     def prefer(self, task_class: str, cand: Optional[Candidate]) -> None:
         if task_class not in TASK_CLASSES:
             return
@@ -280,5 +363,6 @@ class Router:
         with self._lock:
             self._health.clear()
             self._preferred.clear()
+            self._sec_level.clear()
         self._save("health", {})
         self._save("preferred", {})

@@ -29,6 +29,7 @@ _CLASS_HELP = {
     "standard": "everyday writing and explanations",
     "code": "writing, fixing and reviewing code",
     "deep": "hard reasoning, design, analysis, long tasks",
+    "sec": "CVE analysis, exploit/PoC, reversing, red team",
 }
 
 

@@ -73,6 +73,20 @@ def test_clean_values_enforces_limits(api, monkeypatch):
     assert out["cooldown_minutes"] == 1440 and out["cross_provider"] is True
 
 
+def test_clean_values_security_settings(api, monkeypatch):
+    monkeypatch.setattr(api, "_config", lambda: CFG)
+    out = api.clean_values({"degraded_retry": True, "security_roe": "x" * 9000,
+                            "security_preamble_extra": "y" * 5000,
+                            "security_sanitize_max_level": "9",
+                            "extra_guardrail_patterns": [" Corp-Guard ", ""]})
+    assert out["degraded_retry"] is True
+    assert len(out["security_roe"]) == 8000 and len(out["security_preamble_extra"]) == 4000
+    assert out["security_sanitize_max_level"] == 3
+    assert out["extra_guardrail_patterns"] == ["corp-guard"]
+    with pytest.raises(ValueError, match="degraded_retry"):
+        api.clean_values({"degraded_retry": "yes"})
+
+
 def test_routes_over_http(api, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

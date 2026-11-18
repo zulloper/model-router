@@ -1,7 +1,7 @@
 name: model-router
 label: Model Router
 kind: standalone
-version: 0.2.0
+version: 0.3.0
 manifest_version: 2
 api_version: 1
 author: zulloper
@@ -12,13 +12,16 @@ description: >
   models you choose on each). When a model is stopped by a guardrail, a
   refusal or a provider error, it moves to the next allowed model; a
   route_explore tool runs the same task on several allowed models as
-  subagents and remembers the winner. Public plugin API by default;
-  switching the session across providers is an opt-in that uses Hermes
-  internals.
+  subagents and remembers the winner. Security work (CVE analysis, exploits,
+  PoCs, red team) gets its own task class, an authorization/output-contract
+  preamble, refusal and empty-answer retries, and an NVD lookup tool.
+  Public plugin API by default; switching the session across providers is an
+  opt-in that uses Hermes internals.
 requires_hermes: ">=0.22.5"
-tags: [routing, models, reasoning, fallback, guardrails]
+tags: [routing, models, reasoning, fallback, guardrails, security, cve, exploit, redteam]
 provides_tools:
   - route_explore
+  - cve_lookup
 provides_hooks:
   - pre_llm_call
   - post_llm_call
@@ -50,8 +53,8 @@ config_schema:
     default: {}
     label: Routes per task class
     description: >
-      Ordered candidates per task class (quick, standard, code, deep) as
-      "provider/model@effort", e.g. {"deep": ["anthropic/claude-opus-4-8@high"]}.
+      Ordered candidates per task class (quick, standard, code, deep, sec) as
+      "provider/model@effort", e.g. {"sec": ["anthropic/claude-opus-4-8@xhigh"]}.
       Entries outside the allowlist are ignored. Empty: built from the allowlist.
   cross_provider:
     type: bool
@@ -72,6 +75,62 @@ config_schema:
     type: bool
     default: true
     label: Re-answer soft refusals with another allowed model
+  degraded_retry:
+    type: bool
+    default: true
+    label: Redo security answers that skip the requested code
+    description: >
+      On sec turns, an answer that was asked for a PoC/code but is prose only is retried on
+      another allowed model with an output contract.
+  security_preamble:
+    type: bool
+    default: true
+    label: Inject the security preamble on sec turns
+    description: >
+      Adds authorization, an output contract (complete runnable PoC, exact offsets, no hedging)
+      and a CVE workflow to the system prompt of security turns. Does not remove provider guardrails.
+  security_roe:
+    type: str
+    default: ""
+    label: Rules of engagement to include
+    description: Target/scope/period/contacts. Models refuse less when authorization is explicit.
+  security_preamble_extra:
+    type: str
+    default: ""
+    label: Extra standing instructions
+    description: Appended to the security preamble, e.g. tooling or format preferences.
+  security_guardrail_defaults:
+    type: bool
+    default: true
+    label: Treat generic "content filter / safety / cyber" errors as guardrails
+  security_sanitize:
+    type: bool
+    default: true
+    label: Guardrail round-trip (sanitize a refused request and retry)
+    description: >
+      After a guardrail/refusal on a sec turn, rephrase the request (framing terms only; facts
+      stay verbatim), retry (same model first where possible), then restore the answer's terms
+      and check the locked facts. Levels escalate: L1 wording, L2 walkthrough structure, L3 split.
+  security_sanitize_max_level:
+    type: int
+    default: 3
+    label: Highest sanitize level (1-3)
+  security_sanitize_llm:
+    type: bool
+    default: false
+    label: Let a model rephrase the refused request (L2+)
+    description: One extra structured call; deterministic rules run first and remain the fallback.
+  security_sanitize_retry_same_model:
+    type: bool
+    default: true
+    label: Retry the refused model at the next level before switching
+  security_fact_lock:
+    type: bool
+    default: true
+    label: Lock CVE ids, versions, offsets, hashes and symbols
+    description: >
+      Locked facts are never substituted; if the answer drops one, it is retried with the missing
+      facts listed and the footer reports anything still unconfirmed.
   hold_stream:
     type: bool
     default: false

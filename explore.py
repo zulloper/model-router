@@ -115,7 +115,22 @@ def _collect(lifecycle: Any, cand: Candidate, handle: Any, launch_error: Optiona
     return out
 
 
-def _judge(llm: Any, task: str, results: list[dict]) -> tuple[Optional[str], dict[str, Any]]:
+_JUDGE_INSTRUCTIONS = (
+    "Score each answer from 0 to 10 for how well it accomplishes the task: "
+    "correctness first, then completeness, then clarity. Ignore which model wrote "
+    "it. Return every id with a score and the id of the best one as winner."
+)
+_JUDGE_INSTRUCTIONS_SEC = (
+    "You are scoring answers to a security task (CVE analysis, exploit/PoC, reverse engineering). "
+    "Score 0-10 on: technical correctness, whether the requested code/commands are complete and "
+    "runnable, exactness of versions/offsets/symbols, and evidence the author verified rather than "
+    "guessed. Penalise answers that are only a conceptual overview when code was asked for, and "
+    "answers padded with disclaimers. Ignore which model wrote it. Return every id with a score and "
+    "the id of the best one as winner."
+)
+
+
+def _judge(llm: Any, task: str, results: list[dict], task_class: str = "standard") -> tuple[Optional[str], dict[str, Any]]:
     answers = [{"id": r["id"], "answer": (r.get("answer") or "")[:6000]} for r in results if r.get("ok")]
     if not answers:
         return None, {}
@@ -123,9 +138,7 @@ def _judge(llm: Any, task: str, results: list[dict]) -> tuple[Optional[str], dic
         return answers[0]["id"], {}
     try:
         res = llm.complete_structured(
-            instructions=("Score each answer from 0 to 10 for how well it accomplishes the task: "
-                          "correctness first, then completeness, then clarity. Ignore which model wrote "
-                          "it. Return every id with a score and the id of the best one as winner."),
+            instructions=(_JUDGE_INSTRUCTIONS_SEC if task_class == "sec" else _JUDGE_INSTRUCTIONS),
             input={"task": task[:6000], "answers": answers}, json_schema=_JUDGE_SCHEMA,
             schema_name="model_scores", max_tokens=1200, timeout=120,
             purpose="model-router: judge explore results")
@@ -157,7 +170,7 @@ def make_handler(ctx: Any, router: Router, settings_fn):
         tag = f"mr-{uuid.uuid4().hex[:8]}"
         launched = [(c, *_launch(lifecycle, c, task, timeout, tag)) for c in cands]
         results = [_collect(lifecycle, c, h, err, timeout) for c, h, err in launched]
-        winner_id, scores = _judge(ctx.llm, task, results)
+        winner_id, scores = _judge(ctx.llm, task, results, task_class)
         winner = next((c for c in cands if c.key == winner_id), None)
         if winner is not None and params.get("save", True):
             router.prefer(task_class, winner)

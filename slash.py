@@ -4,6 +4,7 @@
     /route auto | off       turn routing on or off (all sessions)
     /route pin <p/m@effort> use one allowed model for this chat;  /route unpin
     /route prefer <class> <p/m> | clear <class>   set or clear a learned preference
+    /route sec on | off     force security mode for this chat (sec class + preamble)
     /route stats            per-model successes, failures, cool-downs
     /route reset            forget stats and learned preferences
 """
@@ -17,13 +18,17 @@ from .router import Router, Settings
 from .scope import TASK_CLASSES, fallback_warnings, parse_candidate
 
 USAGE = ("Usage: /route [status|auto|off|pin <provider/model[@effort]>|unpin|"
-         "prefer <class> <provider/model>|clear <class>|stats|reset]")
+         "prefer <class> <provider/model>|clear <class>|sec on|off|stats|reset]")
 
 
 def describe(s: Settings, router: Router, session_id: str = "", config: Any = None) -> str:
     lines = [f"model-router: {s.mode}" + ("" if s.active or s.mode == "off" else " (no allowlist yet)"),
              f"cross-provider switching: {'on (Hermes internals)' if s.cross_provider else 'off (public API)'}",
-             f"classifier: {s.classifier}", "", "Allowlist:"]
+             f"classifier: {s.classifier}",
+             f"security mode: {'on (sec class + preamble)' if router.sec_on(session_id) else 'off'}",
+             f"guardrail round-trip: {'on' if s.security_sanitize else 'off'}"
+             f"{f', starting L{router.level_for(session_id)}' if router.level_for(session_id) else ''}",
+             "", "Allowlist:"]
     if s.scope.empty:
         lines.append("  (empty) — run `hermes model-router setup` in a terminal")
     for provider, models in s.scope.providers.items():
@@ -106,6 +111,14 @@ def make_handler(ctx: Any, router: Router, settings_fn):
                 return f"Usage: /route clear <{'|'.join(TASK_CLASSES)}>"
             router.prefer(args[1], None)
             return f"Cleared the learned preference for {args[1]}."
+        if cmd == "sec":
+            want = args[1].lower() if len(args) > 1 else "on"
+            if want not in ("on", "off"):
+                return "Usage: /route sec on|off"
+            router.set_sec(session_id, want == "on")
+            return ("Security mode on for this chat: every turn is classified as sec (security "
+                    "preamble, code-required answer checks). /route sec off to stop."
+                    if want == "on" else "Security mode off for this chat.")
         if cmd == "stats":
             return stats(router, s)
         if cmd == "reset":

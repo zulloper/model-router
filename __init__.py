@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def register(ctx) -> None:
-    from . import cli, explore, slash
+    from . import cli, explore, nvd, slash
     from .hooks import RouterHooks
 
     hooks = RouterHooks(ctx)
@@ -35,6 +35,8 @@ def register(ctx) -> None:
 
     ctx.register_tool(name="route_explore", toolset="model_router", schema=explore.SCHEMA,
                       handler=explore.make_handler(ctx, router, settings))
+    ctx.register_tool(name="cve_lookup", toolset="model_router", schema=nvd.SCHEMA,
+                      handler=nvd.make_handler())
     ctx.register_command("route", slash.make_handler(ctx, router, settings),
                          description="Model router: status, auto/off, pin a model, stats",
                          args_hint="[status|auto|off|pin <provider/model@effort>|unpin|stats|reset]")

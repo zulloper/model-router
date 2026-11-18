@@ -30,7 +30,10 @@ PLUGIN_ID = "model-router"
 _ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_dashboard_plugin_model_router"
 _SETTING_KEYS = ("mode", "scope", "routes", "cross_provider", "classifier", "soft_refusal_retry",
-                 "cooldown_minutes", "max_explore")
+                 "cooldown_minutes", "max_explore", "hold_stream", "extra_guardrail_patterns",
+                 "degraded_retry", "security_preamble", "security_roe", "security_preamble_extra",
+                 "security_guardrail_defaults", "security_sanitize", "security_sanitize_max_level",
+                 "security_sanitize_llm", "security_sanitize_retry_same_model", "security_fact_lock")
 
 
 def _pkg():
@@ -94,6 +97,16 @@ def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]]) -> dict:
             "mode": settings.mode, "cross_provider": settings.cross_provider,
             "classifier": settings.classifier, "soft_refusal_retry": settings.soft_refusal_retry,
             "cooldown_minutes": settings.cooldown_minutes, "max_explore": settings.max_explore,
+            "degraded_retry": settings.degraded_retry, "security_preamble": settings.security_preamble,
+            "security_roe": settings.security_roe,
+            "security_preamble_extra": settings.security_preamble_extra,
+            "security_guardrail_defaults": settings.security_guardrail_defaults,
+            "security_sanitize": settings.security_sanitize,
+            "security_sanitize_max_level": settings.security_sanitize_max_level,
+            "security_sanitize_llm": settings.security_sanitize_llm,
+            "security_sanitize_retry_same_model": settings.security_sanitize_retry_same_model,
+            "security_fact_lock": settings.security_fact_lock,
+            "extra_guardrail_patterns": list(settings.extra_guardrail_patterns),
             "scope": settings.scope.providers,
             "routes": {cls: [str(c) for c in raw_routes]
                        for cls, raw_routes in (raw.get("routes") or {}).items()
@@ -148,9 +161,26 @@ def clean_values(values: Any) -> dict:
         raise ValueError("mode must be auto or off")
     if "classifier" in out and out["classifier"] not in ("rules", "hybrid", "llm"):
         raise ValueError("classifier must be rules, hybrid or llm")
-    for key in ("cross_provider", "soft_refusal_retry"):
+    for key in ("cross_provider", "soft_refusal_retry", "degraded_retry", "security_preamble",
+                "security_guardrail_defaults", "hold_stream", "security_sanitize",
+                "security_sanitize_llm", "security_sanitize_retry_same_model", "security_fact_lock"):
         if key in out and not isinstance(out[key], bool):
             raise ValueError(f"{key} must be true or false")
+    if "security_sanitize_max_level" in out:
+        try:
+            out["security_sanitize_max_level"] = max(1, min(3, int(out["security_sanitize_max_level"])))
+        except (TypeError, ValueError):
+            raise ValueError("security_sanitize_max_level must be a number") from None
+    for key, cap in (("security_roe", 8000), ("security_preamble_extra", 4000)):
+        if key in out:
+            out[key] = str(out[key] or "")[:cap]
+    if "extra_guardrail_patterns" in out:
+        patterns = out["extra_guardrail_patterns"]
+        if isinstance(patterns, str):
+            patterns = patterns.splitlines()
+        if not isinstance(patterns, list):
+            raise ValueError("extra_guardrail_patterns must be a list of phrases")
+        out["extra_guardrail_patterns"] = [str(p).strip().lower() for p in patterns if str(p).strip()]
     for key, low, high in (("cooldown_minutes", 0, 1440), ("max_explore", 1, 8)):
         if key in out:
             try:

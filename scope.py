@@ -14,9 +14,9 @@ from typing import Any, Iterable, Mapping, Optional
 logger = logging.getLogger(__name__)
 
 MAX_PROVIDERS = 3
-TASK_CLASSES = ("quick", "standard", "code", "deep")
+TASK_CLASSES = ("quick", "standard", "code", "deep", "sec")
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
-DEFAULT_EFFORT = {"quick": "low", "standard": "medium", "code": "high", "deep": "high"}
+DEFAULT_EFFORT = {"quick": "low", "standard": "medium", "code": "high", "deep": "high", "sec": "xhigh"}
 
 
 @dataclasses.dataclass(frozen=True)
