@@ -124,3 +124,44 @@ def test_schema_has_no_legacy_keys_and_settings_reads_every_key():
     read = set()
     load_settings(lambda key, default=None: read.add(key) or default)
     assert schema - read == {"hold_stream"}  # read at registration (__init__._hold_stream)
+
+
+# --- CLI wizard: providers first, then their models --------------------------------------------
+
+def test_setup_wizard_picks_providers_then_models(monkeypatch):
+    inv = {"openai-codex": ["gpt-6.2-sol", "gpt-6.1-sol"], "nous": ["anthropic/claude-opus-5.5", "x-ai/grok-4.7"]}
+    monkeypatch.setattr(cli, "_config", lambda: {})
+    monkeypatch.setattr(cli, "inventory", lambda cfg: {p: list(ms) for p, ms in inv.items()})
+    answers = iter([
+        {0},        # tier 1 providers: openai-codex
+        {0},        #   openai-codex models: gpt-6.2-sol
+        {0, 1, 2},  # tier 2 providers: openai-codex, nous, + type
+        {0},        #   openai-codex models (gpt-6.2-sol already placed): gpt-6.1-sol
+        {0},        #   nous models: anthropic/claude-opus-5.5
+        set(),      # tier 3: no provider -> done
+    ])
+    titles = []
+
+    def checklist(title, items, selected):
+        titles.append((title, list(items)))
+        return next(answers)
+    monkeypatch.setattr(cli, "_checklist", checklist)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "xai/grok-5")
+    saved = {}
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.run(lambda key, default=None: saved.get(key, default), saved.__setitem__)
+    assert saved["tiers"] == [["openai-codex/gpt-6.2-sol"],
+                              ["openai-codex/gpt-6.1-sol", "nous/anthropic/claude-opus-5.5", "xai/grok-5"]]
+    assert titles[0][1] == ["openai-codex  (2 models)", "nous  (2 models)", "+ type provider/model"]
+    assert titles[3][1] == ["gpt-6.1-sol"]  # a placed model is not offered again
+
+
+def test_models_command_lists_the_inventory(monkeypatch):
+    monkeypatch.setattr(cli, "_config", lambda: {})
+    monkeypatch.setattr(cli, "inventory", lambda cfg: {"nous": ["anthropic/claude-opus-5.5"]})
+    ctx = Namespace(get_config=lambda key, default=None: default, state=None)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert cli.make_handler(ctx)(Namespace(model_router_command="models")) == 0
+    assert "nous (1)\n  nous/anthropic/claude-opus-5.5" in out.getvalue()

@@ -1,8 +1,9 @@
 """``hermes model-router setup | show``: put models on the tier ladder.
 
-``setup`` asks, tier by tier, which models a blocked reply should try next (a checklist of the
-providers' models that have credentials, or a typed ``provider/model``). Checking nothing ends the
-ladder. ``show`` prints the current ladder and needs no terminal.
+``setup`` asks, tier by tier, which models a blocked reply should try next: first the providers
+(those with credentials), then each picked provider's models, or a typed ``provider/model``.
+Picking no provider ends the ladder. ``show`` prints the current ladder and ``models`` lists what
+can go on it; neither needs a terminal.
 
 Menus use Hermes' curses components when available, else numbered prompts.
 """
@@ -98,27 +99,42 @@ def inventory(cfg: dict) -> dict[str, list[str]]:
 def run(get: Callable[[str, Any], Any], set_: Callable[[str, Any], None]) -> None:
     cfg = _config()
     current = load_settings(get).ladder
-    inv = inventory(cfg)
-    known = [f"{p}/{m}" for p, models in inv.items() for m in models]
-    known += [c.key for c in current.models() if c.key not in known]
-    if not known:
+    catalog = inventory(cfg)  # provider -> models
+    for cand in current.models():
+        catalog.setdefault(cand.provider, [])
+        if cand.model not in catalog[cand.provider]:
+            catalog[cand.provider].append(cand.model)
+    if not catalog:
         print("Hermes has no providers with credentials yet. Run `hermes model` first.")
         return
     print("A blocked reply climbs the ladder: tier 1's models are asked first (in parallel), then tier 2, …\n"
-          "Within a tier the order below is the priority. Check nothing to end the ladder.")
+          "Per tier, pick providers, then their models. Within a tier the order picked is the priority.\n"
+          "Pick no provider to end the ladder.")
     tiers: list[list[str]] = []
     placed: set[str] = set()
     for number in range(1, MAX_WIZARD_TIERS + 1):
-        free = [k for k in known if k not in placed]
         was = [c.key for c in current.tiers[number - 1]] if number <= len(current.tiers) else []
-        items = free + ["+ type provider/model"]
-        marks = _checklist(f"Tier {number} · models to ask {'first' if number == 1 else 'next'}", items,
-                           {i for i, k in enumerate(free) if k in was})
+        free = {p: [m for m in models if f"{p}/{m}" not in placed] for p, models in catalog.items()}
+        providers = [p for p, models in free.items() if models]
+        items = [f"{p}  ({len(free[p])} models)" for p in providers] + ["+ type provider/model"]
+        marks = _checklist(f"Tier {number} · providers to ask {'first' if number == 1 else 'next'}", items,
+                           {i for i, p in enumerate(providers) if any(k.startswith(p + "/") for k in was)})
         if marks is None:
             print("No change.")
             return
-        chosen = [free[i] for i in sorted(marks) if i < len(free)]
-        if len(free) in marks:
+        chosen: list[str] = []
+        for i in sorted(marks):
+            if i >= len(providers):
+                continue
+            provider = providers[i]
+            models = free[provider]
+            picked = _checklist(f"Tier {number} · {provider}: models", models,
+                                {j for j, m in enumerate(models) if f"{provider}/{m}" in was})
+            if picked is None:
+                print("No change.")
+                return
+            chosen += [f"{provider}/{models[j]}" for j in sorted(picked)]
+        if len(providers) in marks:
             typed = input("provider/model ids (comma-separated): ").strip()
             for raw in typed.split(","):
                 cand = parse_candidate(raw)
@@ -142,6 +158,7 @@ def setup_parser(parser) -> None:
     sub = parser.add_subparsers(dest="model_router_command", metavar="<command>")
     sub.add_parser("setup", help="Put models on the tier ladder")
     sub.add_parser("show", help="Print the tier ladder")
+    sub.add_parser("models", help="List the providers and models you can put on the ladder")
 
 
 def _promotions(ctx: Any) -> dict:
@@ -159,8 +176,17 @@ def make_handler(ctx: Any):
             from .ladder import hook_timeout
             print(report.describe(load_settings(ctx.get_config), _promotions(ctx), hook_timeout=hook_timeout()))
             return 0
+        if cmd == "models":
+            inv = inventory(_config())
+            if not inv:
+                print("No providers found. Add one with `hermes model`.")
+            for provider, models in inv.items():
+                print(f"{provider} ({len(models)})")
+                for m in models:
+                    print(f"  {provider}/{m}")
+            return 0
         if cmd != "setup":
-            print("usage: hermes model-router {setup,show}")
+            print("usage: hermes model-router {setup,show,models}")
             return 0
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             print(_NO_TTY, file=sys.stderr)

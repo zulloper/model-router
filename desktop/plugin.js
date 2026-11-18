@@ -87,8 +87,11 @@ const KO = {
   "The most models route_explore runs side by side (one subagent each).": "route_explore가 한 번에 나란히 돌리는 최대 모델 수(모델마다 서브에이전트 하나).",
   "Warnings": "경고",
   "Tier": "티어",
-  "Add a model": "모델 추가",
-  "or type provider/model": "또는 provider/model 입력",
+  "Provider": "프로바이더",
+  "Model": "모델",
+  "Pick a provider first": "먼저 프로바이더를 고르세요",
+  "or": "또는",
+  "type provider/model": "provider/model 직접 입력",
   "Add": "추가",
   "Add tier": "티어 추가",
   "Remove tier": "티어 삭제",
@@ -396,16 +399,24 @@ export default {
     function TierEditor({ data, st }) {
       const saved = data.settings.tiers
       const [draft, setDraft] = useState(saved.length ? saved : [[]])
-      const [pick, setPick] = useState({})
+      const [prov, setProv] = useState({})     // tier -> provider picked in its "add" row
+      const [model, setModel] = useState({})   // tier -> model picked for that provider
       const [typed, setTyped] = useState({})
       useEffect(() => setDraft(saved.length ? saved : [[]]), [JSON.stringify(saved)])
 
+      // provider/model: the provider is the first segment; the model may contain "/" itself.
+      const split = key => [key.slice(0, key.indexOf('/')), key.slice(key.indexOf('/') + 1)]
       const placed = new Set(draft.flat())
-      const known = [...new Set([
-        ...Object.entries(data.inventory).flatMap(([p, ms]) => ms.map(m => `${p}/${m}`)),
-        ...saved.flat()
-      ])]
-      const free = known.filter(k => !placed.has(k))
+      const catalog = {}
+      for (const [p, ms] of Object.entries(data.inventory)) catalog[p] = [...ms]
+      for (const key of saved.flat()) {
+        const [p, m] = split(key)
+        catalog[p] = catalog[p] || []
+        if (!catalog[p].includes(m)) catalog[p].push(m)
+      }
+      const providers = Object.keys(catalog)
+      const freeModels = p => (catalog[p] || []).filter(m => !placed.has(`${p}/${m}`))
+      const known = providers.length
       const cleaned = draft.filter(t => t.length)
       const dirty = JSON.stringify(cleaned) !== JSON.stringify(saved)
       const isDefault = key => key === `${data.current.provider}/${data.current.model}`
@@ -422,11 +433,15 @@ export default {
         const k = String(key || '').trim()
         if (!k || !k.includes('/') || placed.has(k)) return
         setTier(i, [...draft[i], k])
-        setPick({ ...pick, [i]: '' })
+        setModel({ ...model, [i]: '' })
         setTyped({ ...typed, [i]: '' })
       }
+      const pickProvider = (i, p) => {
+        setProv({ ...prov, [i]: p })
+        setModel({ ...model, [i]: '' })
+      }
 
-      if (!known.length && !draft.flat().length) {
+      if (!known && !draft.flat().length) {
         return jsx(EmptyState, {
           title: tr("No providers found"),
           description: tr("This profile has no provider with credentials yet. Add one with `hermes model`, then come back.")
@@ -471,17 +486,37 @@ export default {
             jsxs('div', {
               className: 'mt-2 ml-2 flex flex-wrap items-center gap-2',
               children: [
-                free.length
-                  ? jsxs(Select, {
-                      value: pick[i] || '', onValueChange: v => add(i, v),
-                      children: [
-                        jsx(SelectTrigger, { className: 'h-7 w-72 text-xs', children: jsx(SelectValue, { placeholder: tr("Add a model") }) }),
-                        jsx(SelectContent, { children: free.map(k => jsx(SelectItem, { key: k, value: k, children: k })) })
-                      ]
+                jsxs(Select, {
+                  value: prov[i] || '', onValueChange: v => pickProvider(i, v),
+                  children: [
+                    jsx(SelectTrigger, { className: 'h-7 w-56 text-xs', children: jsx(SelectValue, { placeholder: tr("Provider") }) }),
+                    jsx(SelectContent, {
+                      children: providers.map(p =>
+                        jsx(SelectItem, { key: p, value: p, children: `${p} (${freeModels(p).length})` }))
                     })
-                  : null,
+                  ]
+                }),
+                jsxs(Select, {
+                  value: model[i] || '', disabled: !prov[i] || !freeModels(prov[i]).length,
+                  onValueChange: v => setModel({ ...model, [i]: v }),
+                  children: [
+                    jsx(SelectTrigger, {
+                      className: 'h-7 w-72 text-xs',
+                      children: jsx(SelectValue, { placeholder: prov[i] ? tr("Model") : tr("Pick a provider first") })
+                    }),
+                    jsx(SelectContent, {
+                      children: (prov[i] ? freeModels(prov[i]) : []).map(m =>
+                        jsx(SelectItem, { key: m, value: m, children: m }))
+                    })
+                  ]
+                }),
+                jsx(Button, {
+                  variant: 'outline', size: 'xs', disabled: !prov[i] || !model[i],
+                  onClick: () => add(i, `${prov[i]}/${model[i]}`), children: tr("Add")
+                }),
+                jsx(Muted, { children: tr("or") }),
                 jsx(Input, {
-                  placeholder: tr("or type provider/model"), className: 'h-7 w-56 text-xs',
+                  placeholder: tr("type provider/model"), className: 'h-7 w-56 text-xs',
                   value: typed[i] || '',
                   onChange: e => setTyped({ ...typed, [i]: e.target.value }),
                   onKeyDown: e => { if (e.key === 'Enter') add(i, typed[i]) }
