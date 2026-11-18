@@ -47,6 +47,26 @@ def test_cve_and_korean_signals_are_sec():
     assert classify_rules("write a PoC for this stack overflow, gdb output attached\n```\n...\n```")[0] == "sec"
 
 
+@pytest.mark.parametrize("text", [
+    "Add a resource helper for the config loader",       # rce, lpe inside words
+    "Put it in my pocket list and force a refresh",       # poc, rce
+    "source of this helper function?",
+    "Summarize the gdbm migration notes for the ctfeed team",
+])
+def test_sec_keywords_inside_other_words_are_not_sec(text):
+    assert classify_rules(text)[0] != "sec"
+
+
+@pytest.mark.parametrize("text", [
+    "Write exploits for these two RCEs",                 # plural / inflected terms still count
+    "pentesting notes: run nmap against the lab subnet",
+    "PoC를 작성하고 rce 조건을 설명해줘",                    # ASCII term followed by a Korean particle
+    "red teaming 계획과 lateral movement 경로 정리",
+])
+def test_sec_keywords_with_inflections_and_particles_are_sec(text):
+    assert classify_rules(text)[0] == "sec"
+
+
 def test_security_review_stays_deep_without_sec_signal():
     assert classify_rules("결제 아키텍처 보안 검토하고 트레이드오프 분석해줘")[0] == "deep"
 

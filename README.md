@@ -71,7 +71,7 @@ plugins:
           standard: [openai-codex/gpt-6.2-sol@medium]
           code:     [openai-codex/gpt-6.2-sol@high]
           deep:     [anthropic/claude-opus-4-8@high, openai-codex/gpt-6.2-sol@xhigh]
-          sec:      [anthropic/claude-opus-5-5@xhigh, openai-codex/gpt-6.2-sol@xhigh]
+          sec:      [anthropic/claude-opus-4-8@xhigh, openai-codex/gpt-6.2-sol@xhigh]
 ```
 
 `routes`의 각 항목은 `provider/model@effort`입니다. 작업 종류의 라우트가 비어 있으면 허용 목록 전체가 그 종류의 기본 effort로 예비 목록이 됩니다.
@@ -207,7 +207,7 @@ cross_provider: true             # 허용 프로바이더로 직접 이동 (Herm
 /route                 상태: 모드, 허용 목록, 작업 종류별 순서, 보안 모드·순화 레벨, 경고
 /route auto | off      라우팅 켜기/끄기 (off면 cross_provider로 옮긴 세션을 원래대로 돌려놓음)
 /route pin openai-codex/gpt-6.2-sol@high    이 채팅은 이 모델로 고정 (/route unpin)
-/route prefer sec anthropic/claude-opus-5-5
+/route prefer sec anthropic/claude-opus-4-8
 /route clear sec
 /route sec on | off    이 채팅을 보안 모드로 고정/해제. on은 sec 분류 강제 + 프리앰블
 /route stats | reset   모델별 성공·실패·쿨다운 / 통계·선호·순화 레벨 초기화

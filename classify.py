@@ -28,6 +28,20 @@ _SEC = (
     "sqli", "xxe", "ssti", "deserialization", "webshell", "lateral movement", "red team", "redteam",
     "pentest", "penetration test", "ctf", "0-day", "0day", "patch diff", "patch bypass", "mitigation bypass",
 )
+_ASCII_SUFFIX = r"(?:s|es|ed|er|ers|ing|able|ation)?(?![a-z0-9_])"
+
+
+def _sec_pattern(word: str) -> re.Pattern:
+    """Korean terms match as substrings (particles attach directly: 취약점을). ASCII terms need a word
+    start, and end at a word end after an optional inflection, so ``rce`` does not hit "source",
+    ``lpe`` "helper" or ``poc`` "pocket", while "exploits" and "pentesting" still count."""
+    if not word.isascii():
+        return re.compile(re.escape(word))
+    tail = "" if not word[-1].isalnum() else _ASCII_SUFFIX
+    return re.compile(rf"(?<![a-z0-9_]){re.escape(word)}{tail}")
+
+
+_SEC_PATTERNS = tuple(_sec_pattern(w) for w in _SEC)
 _CVE_ID = re.compile(r"\bcve-\d{4}-\d{4,}\b", re.I)
 _DEEP = (
     "설계", "아키텍처", "리팩터", "리팩토링", "근본 원인", "원인 분석", "분석해", "최적화", "증명", "알고리즘",
@@ -57,7 +71,7 @@ def classify_rules(message: str) -> tuple[str, float, str]:
     text = (message or "").lower()
     n = len(text)
     deep, code, quick = _hits(text, _DEEP), _hits(text, _CODE), _hits(text, _QUICK)
-    sec = _hits(text, _SEC)
+    sec = sum(1 for p in _SEC_PATTERNS if p.search(text))
     cve = bool(_CVE_ID.search(message or ""))
     fenced = bool(_CODE_FENCE.search(message or ""))
     if cve or sec >= 2 or (sec and (code or fenced or n > 300)):
