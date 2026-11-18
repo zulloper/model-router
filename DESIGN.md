@@ -139,7 +139,7 @@ enrich 사다리(한 티어 안에서 원문 실패 후 1회):
 
 | 필드 | 뜻 |
 |---|---|
-| `attempt_kind` | `plain` 또는 `enrich` |
+| `kind` | `origin`(프로필 모델의 원래 답) / `plain`(원문 재시도) / `enrich` |
 | `tier`, `attempt` | 티어 번호, 시도 순번 |
 | `prompt_hash`, `glossary_hash` | 실제 보낸 요청 식별 |
 | `outcome` | `ok` / `blocked`(거절·가드레일) / `degraded`(불완전) / `error`(모델 오류) |
@@ -148,7 +148,14 @@ enrich 사다리(한 티어 안에서 원문 실패 후 1회):
 | `delivered` | 그 답이 실제로 사용자에게 갔는가 (버려진 작업 걸러내기) |
 | `latency_ms`, 토큰 | 비용·예산 판단 |
 
-**승격 규칙(§10-2)은 `attempt_kind == plain`이고 `delivered`인 기록만**으로, 최근 창
+구현(P3a): `attempts.py`의 `Attempt`/`AttemptLog`. 저장 위치는 `ctx.state.data_dir/attempts.jsonl`
+(프로필별). 레코드당 프롬프트 16,000자 상한, 5MB마다 회전하고 백업 3개만 유지. 쓰기 실패는 경고만
+남기고 턴을 막지 않는다. 판정은 `outcome.py`의 `judge()`가 하고, 근거(오류 사유나 걸린 문구)를
+`reason`에 남긴다. 턴이 API 오류로 끝났는지는 `post_api_request`/`api_request_error` 관찰 훅으로
+`TurnSignals`가 추적한다(`transform_llm_output` 인자에는 이 정보가 없다). 플러그인의 `ctx.llm`
+호출은 보조 호출이라 이 훅을 발생시키지 않으므로 재시도가 신호를 오염시키지 않는다.
+
+**승격 규칙(§10-2)은 `kind == plain`이고 `delivered`인 기록만**으로, 최근 창
 (최근 N회 또는 EWMA)에서 계산한다. enrich 성공률은 "순화 문구에 반응하는 정도"이지 그
 작업에 강한 정도가 아니다. 가용성(`blocked` 비율)과 품질(`degraded` 비율)을 따로 본다.
 표본 하한을 둔다.
@@ -259,7 +266,8 @@ plugins.entries.model-router.settings:
 - [x] P1. `tiers` 설정 파싱·검증 (`tiers.py`, `Settings.ladder`, `plugin.yaml` 스키마).
   아직 라우팅에는 안 씀. `tiers.py`가 classify에 의존하지 않음을 테스트로 고정.
   `task_class` 상수 고정은 그 값을 실제로 쓰는 P3a로 옮김(쓰는 곳 없는 상수를 미리 두지 않음).
-- [ ] P3a. 막힘 감지 + §6.1 시도 기록 스키마 확정 + 새 경로의 `task_class = "standard"` 고정
+- [x] P3a. 막힘 감지(`outcome.py`) + 시도 기록(`attempts.py`, §6.1). 아직 훅에 연결하지 않음.
+  `task_class` 상수 대신 `security: bool`로 받는다(D5). 두 모듈이 classify에 의존하지 않음을 테스트로 고정.
 - [ ] P2. 1티어·순차·종합 없음으로 재시도 ┐ 최소 경로를
 - [ ] P6. 응답 대체 + 로그(가역성)         ┘ 끝까지 연결
 - [ ] P4. enrich 재시도 (의미 델타 사전)
@@ -354,3 +362,16 @@ Hermes에서 측정했다. 원자료: `~/.hermes/logs/mr-spike.jsonl`. 측정 �
   예외를 낼 때이므로, 그 둘을 불변식 4·5로 막는다(§6).
   - 참고: 지금까지 로그에는 가드레일·정책 차단이 한 건도 없어, API 오류 차단과 거절 문장의
     실제 비율은 측정하지 못했다. §6.1 기록이 쌓이면 확인한다.
+
+## 14. P3a에서 나온 결정
+
+- **D5. 보안 전용 감지는 분류기가 아니라 수동 스위치(`/route sec on`)로 켠다 (제안, 되돌리기 쉬움).**
+  0.3.0은 분류기가 sec로 판정한 턴에만 보안식 거절 패턴("proprietary", "NDA", "개념만")과
+  "코드를 달라 했는데 설명만" 판정을 썼다. 분류기를 없애면 둘 중 하나를 골라야 한다.
+  - 항상 켬: 일반 답에 "NDA" 같은 단어만 있어도 거절로 오판한다.
+  - 항상 끔: 보안 작업에서 개념만 답하는 경우를 놓친다.
+  - **수동 스위치**: 사용자가 이 채팅은 보안 작업이라고 직접 켠다. 추측이 없고, 0.3.0에 이미 있는
+    기능이다. `judge(..., security=router.sec_on(session))`. enrich 단계의 산출물 계약(§5)도 같은
+    스위치를 따르면 일반 요청에 "실행 가능한 전체 PoC" 같은 계약이 붙지 않는다.
+  - 리뷰어가 제안한 `task_class = "standard"` 상수 고정은 이 bool로 대체했다. 새 경로에
+    `task_class`라는 개념 자체가 들어가지 않는다.

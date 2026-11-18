@@ -13,6 +13,7 @@ that was asked for a PoC and contains no code at all is a soft failure even when
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 _MAX_LEN = 900
 _SEC_MAX_LEN = 2400
@@ -51,29 +52,44 @@ _HEDGES = tuple(re.compile(p, re.I) for p in (
 ))
 
 
-def looks_like_refusal(text: str, task_class: str = "") -> bool:
+def refusal_match(text: str, security: bool = False) -> Optional[str]:
+    """The text that made this reply a soft refusal (for the attempt log), or None."""
     body = (text or "").strip()
-    limit = _SEC_MAX_LEN if task_class == "sec" else _MAX_LEN
+    limit = _SEC_MAX_LEN if security else _MAX_LEN
     if not body or len(body) > limit:
-        return False
+        return None
     head = body[:_HEAD]
-    if any(p.search(head) for p in _PATTERNS):
-        return True
-    return task_class == "sec" and any(p.search(head) for p in _SEC_PATTERNS)
+    for pattern in _PATTERNS + (_SEC_PATTERNS if security else ()):
+        match = pattern.search(head)
+        if match:
+            return match.group(0)[:120]
+    return None
+
+
+def looks_like_refusal(text: str, task_class: str = "") -> bool:
+    return refusal_match(text, task_class == "sec") is not None
+
+
+def degraded_reason(text: str, request: str, security: bool = False) -> Optional[str]:
+    """Why a reply that was asked for code/a PoC counts as prose only (or hedge-heavy), or None.
+    Security turns only: elsewhere a prose answer is usually fine."""
+    if not security:
+        return None
+    body = (text or "").strip()
+    if len(body) < 120 or len(body) > 12000:
+        return None
+    if not _WANT_CODE.search(request or "") or _CODE_EVIDENCE.search(body):
+        return None
+    hedges = sum(1 for p in _HEDGES if p.search(body))
+    if hedges >= 2:
+        return f"code was asked for; the reply has no code and {hedges} hedges"
+    if len(body) < 4000:
+        return "code was asked for; the reply has no code"
+    return None
 
 
 def looks_like_degraded(text: str, request: str, task_class: str = "") -> bool:
-    """The task asked for code/a PoC but the reply is prose only (or hedge-heavy). Security turns
-    only: elsewhere a prose answer is usually fine."""
-    if task_class != "sec":
-        return False
-    body = (text or "").strip()
-    if len(body) < 120 or len(body) > 12000:
-        return False
-    if not _WANT_CODE.search(request or "") or _CODE_EVIDENCE.search(body):
-        return False
-    hedges = sum(1 for p in _HEDGES if p.search(body))
-    return hedges >= 2 or len(body) < 4000
+    return degraded_reason(text, request, task_class == "sec") is not None
 
 
 def matches_guardrail(message: str, extra_patterns: tuple[str, ...]) -> bool:
