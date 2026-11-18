@@ -207,6 +207,12 @@ class _NullRouter:
     def pinned(self, session_id: str):
         return None
 
+    def sec_on(self, session_id: str) -> bool:
+        return False
+
+    def level_for(self, session_id: str) -> int:
+        return 0
+
     def last_turn(self, session_id: str):
         return None
 

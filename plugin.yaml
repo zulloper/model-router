@@ -36,7 +36,7 @@ capabilities:
 config_schema:
   mode:
     type: str
-    choices: [auto, off]
+    choices: ["auto", "off"]
     default: auto
     label: Routing mode
     description: "auto: pick a model per turn. off: leave the session's model alone."
