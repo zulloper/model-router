@@ -153,6 +153,15 @@ enrich 사다리(한 티어 안에서 원문 실패 후 1회):
 작업에 강한 정도가 아니다. 가용성(`blocked` 비율)과 품질(`degraded` 비율)을 따로 본다.
 표본 하한을 둔다.
 
+4. **훅은 Hermes 시간 제한에 걸리지 않는다** (D4로 hold_stream을 켜므로 필수, §13).
+   콜백 안에서 `hook_callback_timeout - 여유` 마감을 직접 재고 단계 사이마다 확인한다. 마감 전에
+   끝내지 못하면 원래 답을 돌려준다. 병렬 호출은 마감까지만 기다리고 남은 것은 버린다.
+5. **훅은 예외를 밖으로 내지 않는다.** hold_stream에서는 대체 실패가 곧 "withheld" 문구다
+   (`agent/turn_finalizer.py:572`). 콜백 전체를 감싸고, 무슨 일이 있어도 원래 답(또는 None)을
+   돌려준다. 시간 초과와 같은 무게로 다룬다 — 둘 다 게이트웨이 전체를 60초 막는다.
+6. **설치 안내에 `plugins.hook_callback_timeout: 180~300`을 넣는다.** 기본 30초로는 1티어
+   하나도 빠듯하다(§13 결론 4).
+
 한 문장 규칙: **Enrich, don't disguise — and check the facts in the answer, not just
 in the prompt.**
 
@@ -200,8 +209,9 @@ A는 모델이 아는 것을 늘리고, B는 모델이 보는 것을 흐린다.
 plugins.entries.model-router.settings:
   mode: auto | off
   tiers:                      # 순서 = 티어 번호. 티어 내 순서 = 병렬 우선순위
-    - [provider/model@effort, ...]
+    - [provider/model, ...]     # @effort는 무시(경고). ctx.llm에 effort 인자가 없다
     - [...]
+  hold_stream: true          # D4: 켬. API 오류로 끝난 턴도 복구하려면 필요 (§13). 재시작 필요
   parallel: true             # 티어 내 모델을 병렬 호출 (ctx.llm 직접 호출, false면 순차)
   synthesize: true           # 한 티어에서 2+ 성공 시 종합
   enrich_on_retry: true      # 원문 실패 후 enrich 재시도 (A안). 난독화는 없음
@@ -229,7 +239,8 @@ plugins.entries.model-router.settings:
    (구체 규칙 — 승격 임계치·강등 여부 — 은 P2에서 설계.)
 3. **비용 가드레일 → 옵션 안 넣음 (결정됨).** 사용자가 티어 구성과 로그를 보며 직접
    조절한다. 기본값만 합리적으로(per_model_timeout, 종합 1회) 두고 상한은 강제하지 않음.
-4. **프로바이더 개수 상한** (미결) — 티어 체제에서도 둘지. 큰 영향 없어 P1에서 결정.
+4. **프로바이더 개수 상한 → 두지 않음 (P1에서 결정).** 3개 상한은 허용 목록 UI 때문이었다.
+   대신 한 티어에 모델이 4개를 넘으면 경고한다(한 시간 예산 안의 병렬 호출 부담).
 5. **기존 설정 마이그레이션** (미결) — 0.3.x `scope`+`routes`를 티어로 자동 변환할지.
    P9에서 결정.
 
@@ -245,8 +256,10 @@ plugins.entries.model-router.settings:
   - S2 `transform_llm_output` 반환값이 (a) 일반 (b) hold_stream (c) API 오류로 끝난 턴에서 실제로 사용자에게 가는지
   - S3 `hook_callback_timeout` 30 vs 180에서 시간 초과·버려진 작업 거동
   - S4 `llm_execution` 미들웨어에서 응답을 대체할 수 있는지 (시간 제한 없는 자리)
-- [ ] P1. `tiers` 설정 파싱·검증 + `task_class = "standard"` 상수로 고정 (classify 의존 끊기)
-- [ ] P3a. 막힘 감지 + §6.1 시도 기록 스키마 확정
+- [x] P1. `tiers` 설정 파싱·검증 (`tiers.py`, `Settings.ladder`, `plugin.yaml` 스키마).
+  아직 라우팅에는 안 씀. `tiers.py`가 classify에 의존하지 않음을 테스트로 고정.
+  `task_class` 상수 고정은 그 값을 실제로 쓰는 P3a로 옮김(쓰는 곳 없는 상수를 미리 두지 않음).
+- [ ] P3a. 막힘 감지 + §6.1 시도 기록 스키마 확정 + 새 경로의 `task_class = "standard"` 고정
 - [ ] P2. 1티어·순차·종합 없음으로 재시도 ┐ 최소 경로를
 - [ ] P6. 응답 대체 + 로그(가역성)         ┘ 끝까지 연결
 - [ ] P4. enrich 재시도 (의미 델타 사전)
@@ -333,7 +346,11 @@ Hermes에서 측정했다. 원자료: `~/.hermes/logs/mr-spike.jsonl`. 측정 �
 4. 짧은 요청도 2~4초다. 긴 문맥·긴 답·높은 effort면 수십 초가 예상된다. 기본 30초로는 1티어
    하나도 빠듯하다 → 설치 안내에 `plugins.hook_callback_timeout` 180~300을 넣는다.
 
-결정 필요(P1 전):
+결정:
 
-- **D4. hold_stream 기본값.** 켬 = API 오류 차단까지 복구, 대신 스트리밍 꺼짐 + 시간 초과 시
-  전역 영향. 끔 = 스트리밍 유지, 대신 "정상 응답인데 거절 문장"만 복구.
+- **D4. hold_stream 기본값 = 켬 (결정됨).** 결과(막힌 요청이 결국 답을 받는 비율)는 켠 쪽이
+  항상 같거나 높다 — 끄면 API 오류 차단은 복구 경로가 없다. 켰을 때의 비용(스트리밍 꺼짐)은
+  답의 내용이 아니라 체감 문제다. 끈 쪽보다 결과가 나빠지는 유일한 경로는 플러그인이 멈추거나
+  예외를 낼 때이므로, 그 둘을 불변식 4·5로 막는다(§6).
+  - 참고: 지금까지 로그에는 가드레일·정책 차단이 한 건도 없어, API 오류 차단과 거절 문장의
+    실제 비율은 측정하지 못했다. §6.1 기록이 쌓이면 확인한다.

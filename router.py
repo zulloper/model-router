@@ -16,6 +16,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Mapping, Optional
 
 from .scope import TASK_CLASSES, Candidate, Scope, build_routes, parse_candidate, parse_scope
+from .tiers import Ladder, parse_tiers
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class Settings:
     security_sanitize_retry_same_model: bool
     security_fact_lock: bool
     warnings: list[str]
+    ladder: Ladder = dataclasses.field(default_factory=Ladder)  # 0.4.0 tiers (not routed on yet)
 
     @property
     def active(self) -> bool:
@@ -58,6 +60,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
     mode = str(get("mode", "auto") or "auto").lower()
     classifier = str(get("classifier", "rules") or "rules").lower()
     patterns = get("extra_guardrail_patterns", []) or []
+    ladder = parse_tiers(get("tiers", []))
     return Settings(
         mode=mode if mode in ("auto", "off") else "auto",
         scope=scope, routes=routes,
@@ -77,7 +80,8 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         security_sanitize_llm=bool(get("security_sanitize_llm", False)),
         security_sanitize_retry_same_model=bool(get("security_sanitize_retry_same_model", True)),
         security_fact_lock=bool(get("security_fact_lock", True)),
-        warnings=scope.warnings + route_warnings,
+        warnings=scope.warnings + route_warnings + list(ladder.warnings),
+        ladder=ladder,
     )
 
 

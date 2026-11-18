@@ -56,6 +56,15 @@ config_schema:
       Ordered candidates per task class (quick, standard, code, deep, sec) as
       "provider/model@effort", e.g. {"sec": ["anthropic/claude-opus-4-8@xhigh"]}.
       Entries outside the allowlist are ignored. Empty: built from the allowlist.
+  tiers:
+    type: list
+    default: []
+    label: Tier ladder (0.4.0, in development)
+    description: >
+      Ordered tiers, each a list of "provider/model" entries, e.g.
+      [["openai-codex/gpt-6.2-sol"], ["anthropic/claude-opus-4-8"]]. When a reply is blocked,
+      the models of tier 1 are tried first, then tier 2, and so on. The ladder is also the
+      allowlist. Parsed and validated only for now; routing still uses scope/routes.
   cross_provider:
     type: bool
     default: false
