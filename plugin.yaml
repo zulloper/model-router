@@ -147,6 +147,18 @@ config_schema:
     description: >
       Unset: on when tiers are configured, off otherwise. Replies that end on a provider error
       can only be replaced while held. Holding turns off streaming.
+  parallel:
+    type: bool
+    default: true
+    label: Ask a tier's models in parallel
+    description: Off asks them one after another and stops at the first good answer.
+  synthesize:
+    type: bool
+    default: true
+    label: Combine two or more good answers from a tier
+    description: >
+      One more call, on the first good answer's model, merges the tier's good answers. Skipped
+      when time is short; if it fails, the first good answer is used.
   enrich_on_retry:
     type: bool
     default: true

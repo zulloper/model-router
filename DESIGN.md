@@ -271,7 +271,7 @@ plugins.entries.model-router.settings:
 - [x] P2. 티어 순서대로·순차·종합 없음으로 재시도 ┐ 최소 경로 연결 (`ladder.py`)
 - [x] P6. 응답 대체 + 꼬리말 + 시도 기록       ┘ 실제 Hermes에서 확인(§15)
 - [x] P4. enrich 재시도 (`enrich.py`, 의미 델타 사전) — §16
-- [ ] P5. 병렬 + 종합 (시간 예산 안에서)
+- [x] P5. 병렬 + 종합 (시간 예산 안에서) — §17
 - [ ] P6b. 티어 승격 자동화 (§6.1 규칙)
 - [ ] P7. classify.py + cross_provider/private_switch.py 제거, 잔재 정리
 - [ ] P8. slash/cli/desktop 티어 편집 UI
@@ -438,3 +438,29 @@ Requirements for the answer:
 - 보탤 것이 없는 요청(코드 요청 아님, 치환 없음, ROE 없음)은 enrich 단계를 건너뛴다.
 - 실측은 하지 않았다. enrich는 메시지를 만드는 순수 함수이고 전송 경로는 §15에서 이미 확인했다.
   P5 뒤에 병렬·종합과 함께 한 번에 실측한다.
+
+## 17. P5 결과 (2026-11-18)
+
+구현(`ladder.py`): 한 단계(원문 또는 enrich)에서 티어의 모델을 각자 스레드로 동시에 부른다. 스레드마다
+턴의 context 변수를 따로 복사해 넘긴다(`ctx.llm`이 턴 문맥을 읽을 수 있으므로, 한 Context를 여러
+스레드가 동시에 쓰면 오류). 정상 답이 둘 이상이면 종합 호출을 한 번 더 한다.
+
+- 종합 모델: 티어 순서로 첫 정상 답을 낸 모델. 요청과 답들(각 12,000자까지)을 주고 "더 나은 하나로
+  합쳐라, 아무도 말하지 않은 주장은 더하지 마라, 코드는 완전하게"를 요구한다. enrich 단계였다면 종합도
+  enrich된 요청과 순화된 표현 그대로의 답을 보고, 결과를 복원·사실 검사한다.
+- 시간: 종합이 뒤따를 수 있는 병렬 단계는 남은 시간의 70%만 쓴다(`ROUND_SHARE`). 종합할 시간이
+  `MIN_CALL_SECONDS`보다 적으면 종합을 건너뛴다. 종합이 실패하면 티어 순서 첫 정상 답을 쓴다.
+- 기록: 종합 호출도 `kind=synthesis`로 남긴다(보낸 프롬프트 포함 — 가역성). 종합에 쓰인 답들은
+  `won_synthesis`와 `delivered`가 참.
+- 설정: `parallel`(끄면 순차, 첫 정상 답에서 멈춤), `synthesize`.
+
+실측(기본 프로필, 티어 `[[openai-codex/gpt-6.1-sol, anthropic/claude-opus-5-5]]` 임시 설정, 끝난 뒤 원복):
+
+| 단계 | gpt-6.1-sol | claude-opus-5-5 |
+|---|---|---|
+| 원문 (병렬) | blocked 3.4초 | blocked 2.3초 |
+| enrich (병렬) | ok 3.9초 | ok 2.4초 |
+| 종합 | ok 3.7초 (gpt-6.1-sol) | |
+
+전체 턴 약 20초로 기본 `hook_callback_timeout` 30초 안. 짧은 답 기준이다 — 긴 답이면 여전히 180~300을
+권장한다(불변식 6).

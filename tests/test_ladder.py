@@ -80,7 +80,8 @@ def test_climbs_to_the_next_tier_when_a_whole_tier_fails(tmp_path):
                                        "grok-5": "def parse(s): return s.split()"})
     out = run(r, REFUSAL)
     assert "xai/grok-5 answered instead (tier 2" in out
-    assert [m for _, m, _, _ in ctx.llm.calls] == ["claude-opus-4-8", "gpt-6.2-sol", "grok-5"]
+    called = [m for _, m, _, _ in ctx.llm.calls]
+    assert called[0] == "claude-opus-4-8" and sorted(called[1:]) == ["gpt-6.2-sol", "grok-5"]  # tier 2 in parallel
     assert [(a.model, a.outcome, a.delivered) for a in log.recent()] == [
         ("gpt-6.1-sol", "blocked", False), ("claude-opus-4-8", "blocked", False),
         ("gpt-6.2-sol", "error", False), ("grok-5", "ok", True)]
@@ -107,7 +108,7 @@ def test_the_model_that_just_failed_is_not_asked_again(tmp_path):
     r, ctx, signals, _ = runner(tmp_path, {"gpt-6.2-sol": REFUSAL, "grok-5": "ok: def parse(s): ..."})
     signals.record_success("t1", "anthropic", "claude-opus-4-8")  # origin is the tier-1 model
     run(r, REFUSAL)
-    assert [m for _, m, _, _ in ctx.llm.calls] == ["gpt-6.2-sol", "grok-5"]
+    assert sorted(m for _, m, _, _ in ctx.llm.calls) == ["gpt-6.2-sol", "grok-5"]
 
 
 def test_no_call_starts_without_enough_time_left(tmp_path):

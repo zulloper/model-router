@@ -1,7 +1,8 @@
 """Attempt records (0.4.0, DESIGN.md §6 and §6.1): one line per attempt, for reversibility and stats.
 
-An attempt is one answer to one blocked turn: the profile model's own reply (``origin``), or a
-ladder retry with the request as written (``plain``) or enriched (``enrich``). Each record keeps
+An attempt is one answer to one blocked turn: the profile model's own reply (``origin``), a
+ladder retry with the request as written (``plain``) or enriched (``enrich``), or the call that
+combined a tier's good answers (``synthesis``). Each record keeps
 what was actually sent, so a reviewer can rebuild why an answer was delivered (invariant 3), and
 the fields promotion needs (§6.1): outcomes kept apart, and ``delivered`` so a late result from
 abandoned work never counts.
@@ -27,8 +28,8 @@ from .outcome import OUTCOMES
 
 logger = logging.getLogger(__name__)
 
-ORIGIN, PLAIN, ENRICH = "origin", "plain", "enrich"
-KINDS = (ORIGIN, PLAIN, ENRICH)
+ORIGIN, PLAIN, ENRICH, SYNTH = "origin", "plain", "enrich", "synthesis"
+KINDS = (ORIGIN, PLAIN, ENRICH, SYNTH)
 SCHEMA_VERSION = 1
 
 
@@ -36,7 +37,7 @@ SCHEMA_VERSION = 1
 class Attempt:
     turn_id: str
     session_id: str
-    kind: str                       # origin | plain | enrich
+    kind: str                       # origin | plain | enrich | synthesis
     tier: Optional[int]             # 0-based ladder tier; None for origin
     index: int                      # order within the turn; origin is 0
     provider: str

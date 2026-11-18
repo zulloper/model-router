@@ -49,6 +49,8 @@ class Settings:
     ladder: Ladder = dataclasses.field(default_factory=Ladder)  # 0.4.0 tiers
     retry_budget_seconds: Any = "auto"
     enrich_on_retry: bool = True
+    parallel: bool = True
+    synthesize: bool = True
 
     @property
     def active(self) -> bool:
@@ -91,6 +93,8 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         ladder=ladder,
         retry_budget_seconds=get("retry_budget_seconds", "auto"),
         enrich_on_retry=bool(get("enrich_on_retry", True)),
+        parallel=bool(get("parallel", True)),
+        synthesize=bool(get("synthesize", True)),
     )
 
 
