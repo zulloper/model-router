@@ -1,0 +1,10 @@
+{
+  "name": "model-router",
+  "label": "Model Router",
+  "description": "Backend for the Model Router settings pages: allowlist, routes, model stats.",
+  "icon": "Route",
+  "version": "0.2.0",
+  "tab": { "path": "/model-router", "hidden": true },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

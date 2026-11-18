@@ -1,0 +1,91 @@
+name: model-router
+label: Model Router
+kind: standalone
+version: 0.2.0
+manifest_version: 2
+api_version: 1
+author: zulloper
+license: MIT
+description: >
+  Picks a model and reasoning effort for each turn from the kind of task you
+  give, but only from an allowlist you check off (up to 3 providers and the
+  models you choose on each). When a model is stopped by a guardrail, a
+  refusal or a provider error, it moves to the next allowed model; a
+  route_explore tool runs the same task on several allowed models as
+  subagents and remembers the winner. Public plugin API by default;
+  switching the session across providers is an opt-in that uses Hermes
+  internals.
+requires_hermes: ">=0.22.5"
+tags: [routing, models, reasoning, fallback, guardrails]
+provides_tools:
+  - route_explore
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - api_request_error
+  - transform_api_error_classification
+  - transform_llm_output
+provides_middleware:
+  - llm_request
+capabilities:
+  - llm.model_override     # soft-refusal re-answer / explore judge on an allowed model
+  - llm.provider_override  # ... which may sit on another allowed provider
+config_schema:
+  mode:
+    type: str
+    choices: [auto, off]
+    default: auto
+    label: Routing mode
+    description: "auto: pick a model per turn. off: leave the session's model alone."
+  scope:
+    type: dict
+    default: {}
+    label: Allowed providers and models
+    description: >
+      The allowlist. Up to 3 providers, each with the models routing may use,
+      e.g. {"openai-codex": ["gpt-6.2-sol"], "anthropic": ["claude-opus-4-8"]}.
+      Nothing outside it is ever picked. Edit with `hermes model-router setup`.
+  routes:
+    type: dict
+    default: {}
+    label: Routes per task class
+    description: >
+      Ordered candidates per task class (quick, standard, code, deep) as
+      "provider/model@effort", e.g. {"deep": ["anthropic/claude-opus-4-8@high"]}.
+      Entries outside the allowlist are ignored. Empty: built from the allowlist.
+  cross_provider:
+    type: bool
+    default: false
+    label: Switch the session across providers (uses Hermes internals)
+    description: >
+      Off: routing only changes the model within the provider the session is
+      on (public API). On: the session itself is moved to another allowed
+      provider when the route says so. May break on a Hermes update; falls
+      back to off if the internals are missing.
+  classifier:
+    type: str
+    choices: [rules, hybrid, llm]
+    default: rules
+    label: Task classifier
+    description: "rules: keywords and length, no extra call. hybrid: ask a model only when rules are unsure. llm: always ask a model."
+  soft_refusal_retry:
+    type: bool
+    default: true
+    label: Re-answer soft refusals with another allowed model
+  hold_stream:
+    type: bool
+    default: false
+    label: Hold streamed replies until the refusal check ran (restart to apply)
+  cooldown_minutes:
+    type: int
+    default: 30
+    label: Minutes a model sits out after failing twice in a row
+  max_explore:
+    type: int
+    default: 3
+    label: Models route_explore runs at most
+  extra_guardrail_patterns:
+    type: list
+    default: []
+    label: Extra guardrail phrases
+    description: Lower-case phrases in a provider error that mean a guardrail stopped the request.
