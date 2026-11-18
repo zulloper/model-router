@@ -17,8 +17,9 @@ Whether the turn ended on a provider error is not in ``transform_llm_output``'s 
 ``api_request_error`` observers. Plugin ``ctx.llm`` calls are auxiliary calls and do not fire those
 hooks, so the ladder's own retries never show up here.
 
-Nothing in this module depends on task classification: ``security`` is the chat's explicit
-security switch (``/route sec on``), not a guess from the text.
+Security-style detection is always on (DESIGN.md D5) and gated by the request instead of a task
+class: "proprietary"/"NDA"/"concept only" count as refusals, and a prose reply as degraded, only
+when the request asks for code. Nothing here depends on task classification.
 """
 
 from __future__ import annotations
@@ -127,7 +128,7 @@ class TurnSignals:
             self._last.pop(turn_id, None)
 
 
-def judge(text: str, request: str = "", *, failure: Optional[ApiFailure] = None, security: bool = False,
+def judge(text: str, request: str = "", *, failure: Optional[ApiFailure] = None,
           guardrail_patterns: tuple[str, ...] = ()) -> Verdict:
     """The outcome of one attempt. ``failure`` is set when the turn ended on a provider error: then
     ``text`` is Hermes' error notice, not a model answer, and the error decides."""
@@ -140,10 +141,10 @@ def judge(text: str, request: str = "", *, failure: Optional[ApiFailure] = None,
         return Verdict(ERROR, f"provider: {failure.reason or 'error'}{transient}")
     if not (text or "").strip():
         return Verdict(ERROR, "empty reply")
-    matched = refusal_match(text, security)
+    matched = refusal_match(text, security=True, request=request or "")
     if matched:
         return Verdict(BLOCKED, f"refusal: {matched}")
-    why = degraded_reason(text, request, security)
+    why = degraded_reason(text, request, security=True)
     if why:
         return Verdict(DEGRADED, why)
     return Verdict(OK, "")

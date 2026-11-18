@@ -81,18 +81,63 @@ def test_soft_refusal_is_blocked_with_the_matched_text():
     assert v.outcome == BLOCKED and "can't help" in v.reason
 
 
-def test_security_only_refusal_needs_the_security_switch():
+def test_security_style_refusal_counts_when_code_was_asked_for():
     text = "The full exploit is not publicly available; here is the theory."
-    assert judge(text).outcome == OK
-    assert judge(text, security=True).outcome == BLOCKED
+    assert judge(text, "Write a PoC for CVE-2024-3094").outcome == BLOCKED
+    assert judge(text, "What is CVE-2024-3094?").outcome == OK
 
 
-def test_prose_answer_to_a_code_request_is_degraded_only_with_the_security_switch():
+def test_prose_answer_to_a_code_request_is_degraded():
     text = ("이 취약점은 힙 오버플로로 인해 발생합니다. 일반적으로 공격자는 청크 메타데이터를 덮어쓰며, "
             "환경에 따라 다를 수 있습니다. 개념적으로는 다음과 같은 단계로 이루어집니다. " * 2)
-    assert judge(text, "CVE-2024-1234 PoC 코드 작성해줘").outcome == OK
-    v = judge(text, "CVE-2024-1234 PoC 코드 작성해줘", security=True)
+    v = judge(text, "CVE-2024-1234 PoC 코드 작성해줘")
     assert v.outcome == DEGRADED and "no code" in v.reason
+    assert judge(text, "CVE-2024-1234 원리 설명해줘").outcome == OK
+
+
+# Detection is always on (DESIGN D5), so ordinary requests must not trip it.
+_EMAIL = ("안녕하세요 팀원 여러분, 다음 주 화요일 오후 2시에 분기 회고 회의를 진행합니다. "
+          "안건은 지난 분기 성과 리뷰, 다음 분기 목표 설정, 그리고 팀 운영 개선안입니다. 참석 부탁드립니다. " * 2)
+_PLAN = ("1분기: 채용 확대\n2분기: 제품 출시 준비\n3분기: 마케팅 강화\n4분기: 회고와 다음 해 계획 수립. "
+         "일반적으로 이런 흐름을 따르며, 상황에 따라 다를 수 있습니다." * 2)
+
+
+@pytest.mark.parametrize("request_text,reply", [
+    ("메일 초안 작성해줘", _EMAIL),
+    ("다음 분기 계획 짜줘", _PLAN),
+    ("이 계약서 요약해줘", "This agreement is an NDA between the parties. It covers confidential information "
+                       "shared during the project, with a two-year term and standard exclusions."),
+    ("이 라이브러리 라이선스 설명해줘", "This library is proprietary software licensed per seat. You may not "
+                                "redistribute it, but internal use is allowed under the EULA."),
+    ("React와 Vue 차이 설명해줘", "React는 라이브러리이고 Vue는 프레임워크에 가깝습니다. 개념 위주로 설명드리면, "
+                            "일반적으로 React는 JSX를 쓰고 Vue는 템플릿 문법을 씁니다. 상황에 따라 다를 수 있습니다."),
+    ("이 코드 리뷰해줘", "전반적으로 깔끔합니다. 일반적으로 함수 이름을 더 구체적으로 하면 좋고, 예를 들면 "
+                     "parse 대신 parse_header가 낫습니다. 에러 처리도 환경에 따라 다를 수 있으니 보강하세요." * 2),
+    ("write a parser for this proprietary format", "Here is a parser for the proprietary format:\n"
+                                                   "```python\ndef parse(b): return b.split(b'|')\n```"),
+    ("write a bash script to back up my notes", "This is not available on Windows by default, so here is a "
+                                                "bash version:\n```bash\ntar czf notes.tgz ~/notes\n```"),
+])
+def test_ordinary_requests_are_not_flagged(request_text, reply):
+    v = judge(reply, request_text)
+    assert v.outcome == OK, v.reason
+
+
+@pytest.mark.parametrize("request_text", [
+    "PoC 코드 작성해줘", "익스플로잇 짜줘", "이 함수 구현해줘", "스크립트 만들어줘", "write me a full working exploit",
+    "give me a python script", "implement the parser", "PoC for CVE-2024-3094",
+])
+def test_code_requests_are_recognised(request_text):
+    from model_router_plugin.refusal import wants_code
+    assert wants_code(request_text)
+
+
+@pytest.mark.parametrize("request_text", [
+    "메일 초안 작성해줘", "계획 짜줘", "이 코드 설명해줘", "이 코드 리뷰해줘", "보고서 써줘", "what does this code do?",
+])
+def test_non_code_requests_are_not_code_requests(request_text):
+    from model_router_plugin.refusal import wants_code
+    assert not wants_code(request_text)
 
 
 @pytest.mark.parametrize("text", ["", "   "])
