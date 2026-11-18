@@ -69,6 +69,7 @@ def test_two_good_answers_are_combined_on_the_first_models_side(tmp_path):
         ("plain", "grok-5", "ok", True, True),
         ("synthesis", "claude-opus-4-8", "ok", True, False)]
     assert "Answer 1 (anthropic/claude-opus-4-8)" in records[-1].prompt[0]["content"]
+    assert "do not mention that there were several answers" in records[-1].prompt[0]["content"]
 
 
 def test_failed_synthesis_falls_back_to_the_first_good_answer_in_tier_order(tmp_path):

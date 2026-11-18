@@ -110,7 +110,7 @@ config_schema:
     default: auto
     label: Time budget for climbing the ladder (seconds, or auto)
     description: >
-      auto: a few seconds inside plugins.hook_callback_timeout. Raise that timeout (180-300 is
+      auto: a few seconds inside plugins.hook_callback_timeout. Raise that timeout (300 is
       recommended) to give the ladder room; a budget above it is capped to it.
   security_guardrail_defaults:
     type: bool

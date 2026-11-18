@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 from . import enrich, promote
 from .attempts import ENRICH, ORIGIN, PLAIN, SYNTH, Attempt, AttemptLog, prompt_hash
 from .outcome import BLOCKED, DEGRADED, OK, TurnSignals, Verdict, judge
+from .refusal import GUARDRAIL_DEFAULTS, matches_guardrail
 from .candidate import Candidate
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,11 @@ _WHAT = {BLOCKED: "was blocked", DEGRADED: "answered without the requested code"
 _SUBAGENT_ANSWER_NOTE = ("\n\n(Your final message is delivered to the user as the answer to this request, "
                          "so make it the complete answer.)")
 _SYNTH_ASK = ("Several answers to the same request follow. Combine them into one answer that is better than "
-              "each: keep everything correct and useful from each, resolve disagreements (say which is right "
-              "and why when it matters), and drop repetition. Do not add claims that none of them supports. "
-              "Keep code complete. Reply with the combined answer only.")
+              "each: keep everything correct and useful from each, settle disagreements by giving the correct "
+              "version (with the reason when it matters), and drop repetition. Do not add claims that none of "
+              "them supports. Keep code complete. Write it as a single answer addressed to the user: do not "
+              "mention that there were several answers, compare them, or refer to them by number. Reply with "
+              "the combined answer only.")
 
 
 def hook_timeout() -> float:
@@ -96,6 +99,7 @@ class _Turn:
     context: list[dict[str, str]]
     transport: str = "llm"                       # how this turn's retries run: llm | subagent
     toolsets: Optional[tuple[str, ...]] = None   # subagent allowed_toolsets (None = the parent's)
+    guardrail_patterns: tuple[str, ...] = ()     # error phrases that mean a provider guardrail stopped a call
 
 
 def recent_context(history: Any, limit: int = _CONTEXT_MESSAGES) -> list[dict[str, str]]:
@@ -180,6 +184,8 @@ class LadderRunner:
         # A reply that needed tools is retried by a subagent with tools, when that is switched on;
         # everything else by a direct call without tools (fast, no child session).
         turn.transport, turn.toolsets = "llm", None
+        turn.guardrail_patterns = tuple(getattr(settings, "extra_guardrail_patterns", ()) or ()) + (
+            GUARDRAIL_DEFAULTS if getattr(settings, "security_guardrail_defaults", True) else ())
         if (getattr(settings, "subagent_retry", False) and self.signals.used_tools(turn_id)
                 and getattr(self.ctx, "subagent_lifecycle", None) is not None):
             from .settings import SUBAGENT_TOOLSETS
@@ -390,7 +396,13 @@ class LadderRunner:
         text, missing = raw, []
         if enriched is not None and raw:
             text, missing = enrich.finish(raw, enriched)
-        verdict = Verdict("error", err) if err else judge(text, turn.user_message)
+        if err:
+            # A retry stopped by a provider guardrail is blocked, not a model error (the same phrases the
+            # transform_api_error_classification hook uses for the profile model's own calls).
+            blocked = matches_guardrail(err, turn.guardrail_patterns)
+            verdict = Verdict(BLOCKED, f"provider guardrail: {err}") if blocked else Verdict("error", err)
+        else:
+            verdict = judge(text, turn.user_message)
         if verdict.outcome == OK and missing:  # invariant 1: locked facts are checked in the answer
             verdict = Verdict(DEGRADED, "missing locked facts: " + ", ".join(missing[:8]))
         attempt = Attempt(

@@ -37,7 +37,7 @@
 
 - Hermes `>= 0.22.5`
 - 플러그인 권한 `llm.model_override`, `llm.provider_override`(재시도와 종합을 사다리 모델로 보내는 데 필요)
-- 권장: `plugins.hook_callback_timeout: 180`~`300` (아래 참고)
+- 권장: `plugins.hook_callback_timeout: 300` (아래 참고)
 
 ```bash
 ln -sfn /path/to/model-router ~/.hermes/plugins/model-router
@@ -48,10 +48,11 @@ hermes plugins enable model-router        # 일반 터미널에서: 권한 승�
   `hermes plugins capabilities model-router`로 상태를 확인하세요.
 - **시간 제한을 올리세요.** 답 대체는 `transform_llm_output` 훅 안에서 일어나고, 이 훅은
   `plugins.hook_callback_timeout`(기본 30초) 안에 끝나야 합니다. 사다리는 이 제한보다 4초 먼저 스스로
-  멈추지만, 30초로는 짧은 답 1티어 정도가 한계입니다.
+  멈추지만, 30초로는 짧은 답 1티어 정도가 한계입니다. 실측에서 긴 보안 답(검토 + 코드)은 1티어 재시도에 약
+  95초, 종합에 약 60초가 걸렸습니다.
   ```yaml
   plugins:
-    hook_callback_timeout: 180
+    hook_callback_timeout: 300
   ```
 - **링크 설치의 동작.** `~/.hermes/plugins/model-router`가 이 폴더를 가리키면, 체크아웃된 코드가 곧 실행
   코드입니다. `hermes plugins enable`을 하면 Desktop 화면 사본(`~/.hermes/desktop-plugins/model-router/`)도

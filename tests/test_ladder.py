@@ -171,3 +171,26 @@ def test_without_tiers_the_ladder_stays_out_of_the_way(tmp_path):
                                  turn_id="t1")
     assert ctx.hooks["transform_llm_output"][0](response_text=REFUSAL, session_id="s1", turn_id="t1") is None
     assert ctx.llm.calls == []
+
+
+# --- guardrail errors in retries ----------------------------------------------------------------
+
+GATED = RuntimeError("Request failed: this response cannot be shown for this session.")
+
+
+def test_a_retry_stopped_by_a_listed_guardrail_phrase_is_blocked(tmp_path):
+    r, _, _, log = runner(tmp_path, {"claude-opus-4-8": GATED, "gpt-6.2-sol": "def parse(s): ...", "grok-5": ""})
+    s = settings(extra_guardrail_patterns=["this response cannot be shown"])
+    assert run(r, REFUSAL, s).startswith("def parse")
+    gated = next(a for a in log.recent() if a.model == "claude-opus-4-8")
+    assert gated.outcome == "blocked" and gated.reason.startswith("provider guardrail:")
+
+
+def test_default_guardrail_phrases_apply_to_retries_unless_turned_off(tmp_path):
+    filtered = RuntimeError("Output blocked by the content filter")
+    r, _, _, log = runner(tmp_path, {"claude-opus-4-8": filtered, "gpt-6.2-sol": "", "grok-5": ""})
+    run(r, REFUSAL)
+    assert next(a for a in log.recent() if a.model == "claude-opus-4-8").outcome == "blocked"
+    r, _, _, log = runner(tmp_path / "off", {"claude-opus-4-8": filtered, "gpt-6.2-sol": "", "grok-5": ""})
+    run(r, REFUSAL, settings(security_guardrail_defaults=False))
+    assert next(a for a in log.recent() if a.model == "claude-opus-4-8").outcome == "error"

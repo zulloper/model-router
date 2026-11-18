@@ -73,7 +73,7 @@ def describe(settings: Settings, promotions: Mapping[str, int], *, hold_stream: 
     if hook_timeout is not None:
         from .ladder import ladder_budget
         budget = ladder_budget(hook_timeout, settings.retry_budget_seconds)
-        note = " (180-300 recommended)" if 0 < hook_timeout < 120 else ""
+        note = " (300 recommended)" if 0 < hook_timeout < 300 else ""
         lines.append(f"Time: hook timeout {hook_timeout:g}s{note}, ladder budget {budget:g}s")
     if settings.security_roe.strip():
         lines.append("Rules of engagement: set (quoted in enriched retries)")

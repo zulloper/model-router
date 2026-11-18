@@ -148,8 +148,8 @@ const FN = {
     ko: tiers => tiers.map((t, i) => `${i + 1}: ${t.map(m => m.key).join(', ') || '—'}`).join(' · ')
   },
   time: {
-    en: (timeout, budget) => `Hook timeout ${timeout || 'off'}s, ladder budget ${budget}s.` + (timeout > 0 && timeout < 120 ? ' Raise plugins.hook_callback_timeout to 180–300 for longer answers.' : ''),
-    ko: (timeout, budget) => `훅 시간 제한 ${timeout || '없음'}초, 사다리 예산 ${budget}초.` + (timeout > 0 && timeout < 120 ? ' 긴 답을 위해 plugins.hook_callback_timeout을 180–300으로 올리세요.' : '')
+    en: (timeout, budget) => `Hook timeout ${timeout || 'off'}s, ladder budget ${budget}s.` + (timeout > 0 && timeout < 300 ? ' Raise plugins.hook_callback_timeout to 300 for long answers.' : ''),
+    ko: (timeout, budget) => `훅 시간 제한 ${timeout || '없음'}초, 사다리 예산 ${budget}초.` + (timeout > 0 && timeout < 300 ? ' 긴 답을 위해 plugins.hook_callback_timeout을 300으로 올리세요.' : '')
   },
   tierHelp: {
     en: n => (n === 1 ? 'Asked first.' : `Asked after tier ${n - 1} fails.`),
