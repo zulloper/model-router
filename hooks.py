@@ -20,7 +20,10 @@ import logging
 from typing import Any, Optional
 
 from . import private_switch, sanitize, security
+from .attempts import AttemptLog
 from .classify import classify
+from .ladder import LadderRunner
+from .outcome import TurnSignals
 from .refusal import looks_like_degraded, looks_like_refusal, matches_guardrail
 from .router import Router, Settings, TurnPlan, load_settings
 from .scope import Candidate
@@ -109,11 +112,22 @@ def _recent_context(history: Any, limit: int = 6) -> list[dict[str, str]]:
     return out
 
 
+def _default_attempt_log(ctx: Any) -> Optional[AttemptLog]:
+    """``attempts.jsonl`` in the plugin's profile data directory, when the host provides one."""
+    try:
+        data_dir = getattr(getattr(ctx, "state", None), "data_dir", None)
+        return AttemptLog(data_dir / "attempts.jsonl") if data_dir is not None else None
+    except Exception:
+        return None
+
+
 class RouterHooks:
-    def __init__(self, ctx: Any, router: Optional[Router] = None):
+    def __init__(self, ctx: Any, router: Optional[Router] = None, attempt_log: Optional[AttemptLog] = None):
         self.ctx = ctx
         self.router = router or Router(getattr(ctx, "state", None))
         self._home_route: dict[str, tuple[str, str]] = {}  # session -> route before we moved it
+        self.signals = TurnSignals()
+        self.ladder = LadderRunner(ctx, self.signals, attempt_log or _default_attempt_log(ctx))
 
     def settings(self) -> Settings:
         return load_settings(self.ctx.get_config)
@@ -122,6 +136,8 @@ class RouterHooks:
     def on_pre_llm_call(self, session_id: str = "", user_message: str = "", conversation_history: Any = None,
                         turn_id: str = "", task_id: str = "", **kwargs: Any) -> None:
         s = self.settings()
+        if s.ladder_active:
+            self.ladder.note_turn(turn_id or task_id, session_id, user_message, conversation_history)
         if not s.active:
             if s.mode == "off" and session_id in self._home_route:
                 self._restore_home(session_id)
@@ -241,9 +257,17 @@ class RouterHooks:
         return ""
 
     # 3. failures -----------------------------------------------------------------------------
+    def on_post_api_request(self, turn_id: str = "", task_id: str = "", provider: str = "", model: str = "",
+                            **kwargs: Any) -> None:
+        self.signals.record_success(turn_id or task_id, provider, model)
+        return None
+
     def on_api_request_error(self, turn_id: str = "", task_id: str = "", provider: str = "",
                              reason: str = "", retryable: Any = None, error: Any = None,
                              **kwargs: Any) -> None:
+        self.signals.record_error(turn_id or task_id, reason=reason, retryable=retryable,
+                                  status_code=kwargs.get("status_code"), error=error, provider=provider,
+                                  model=kwargs.get("model", ""))
         plan = self.router.turn(turn_id) or self.router.turn(task_id)
         if plan is None or plan.current is None:
             return None
@@ -368,7 +392,14 @@ class RouterHooks:
 
     def on_transform_llm_output(self, response_text: str = "", session_id: str = "", turn_id: str = "",
                                 **kwargs: Any) -> Optional[str]:
-        s = self.settings()
+        try:
+            s = self.settings()
+        except Exception:  # held replies: an exception here would withhold the reply (invariant 5)
+            logger.exception("model-router: could not read settings; keeping the reply")
+            return None
+        if s.ladder_active:
+            return self.ladder.handle(response_text, turn_id=turn_id, session_id=session_id, settings=s,
+                                      model_hint=str(kwargs.get("model") or ""))
         if not s.active:
             return None
         plan = self.router.turn(turn_id) or self.router.last_turn(session_id)

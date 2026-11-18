@@ -23,14 +23,10 @@ def register(ctx) -> None:
 
     ctx.register_hook("pre_llm_call", hooks.on_pre_llm_call)
     ctx.register_hook("post_llm_call", hooks.on_post_llm_call)
+    ctx.register_hook("post_api_request", hooks.on_post_api_request)
     ctx.register_hook("api_request_error", hooks.on_api_request_error)
     ctx.register_hook("transform_api_error_classification", hooks.on_classify_error)
-    hold = False
-    try:
-        hold = bool(ctx.get_config("hold_stream", False))
-    except Exception:
-        pass
-    ctx.register_hook("transform_llm_output", hooks.on_transform_llm_output, hold_stream=hold)
+    ctx.register_hook("transform_llm_output", hooks.on_transform_llm_output, hold_stream=_hold_stream(ctx))
     ctx.register_middleware("llm_request", hooks.on_llm_request)
 
     ctx.register_tool(name="route_explore", toolset="model_router", schema=explore.SCHEMA,
@@ -45,3 +41,16 @@ def register(ctx) -> None:
         setup_fn=cli.setup_parser, handler_fn=cli.make_handler(ctx),
         description="Check off the providers/models routing may use and the model per task class: "
                     "`hermes model-router setup` (or `show`).")
+
+
+def _hold_stream(ctx) -> bool:
+    """``hold_stream`` as set; unset means on exactly when a tier ladder is configured (DESIGN D4):
+    replies that end on a provider error reach ``transform_llm_output`` only when held."""
+    try:
+        value = ctx.get_config("hold_stream", None)
+        if value is None:
+            from .tiers import parse_tiers
+            return not parse_tiers(ctx.get_config("tiers", [])).empty
+        return bool(value)
+    except Exception:
+        return False

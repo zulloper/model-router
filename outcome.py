@@ -95,19 +95,23 @@ class TurnSignals:
     def __init__(self, max_turns: int = _MAX_TURNS) -> None:
         self._lock = threading.Lock()
         self._last: "OrderedDict[str, Optional[ApiFailure]]" = OrderedDict()  # None = last one succeeded
+        self._route: dict[str, tuple[str, str]] = {}  # turn -> (provider, model) of its last attempt
         self._max = max_turns
 
-    def _put(self, turn_id: str, value: Optional[ApiFailure]) -> None:
+    def _put(self, turn_id: str, value: Optional[ApiFailure], provider: Any = "", model: Any = "") -> None:
         if not turn_id:
             return
         with self._lock:
             self._last[turn_id] = value
             self._last.move_to_end(turn_id)
+            if provider or model:
+                self._route[turn_id] = (str(provider or "").lower(), str(model or ""))
             while len(self._last) > self._max:
-                self._last.popitem(last=False)
+                old, _ = self._last.popitem(last=False)
+                self._route.pop(old, None)
 
-    def record_success(self, turn_id: str) -> None:
-        self._put(turn_id, None)
+    def record_success(self, turn_id: str, provider: Any = "", model: Any = "") -> None:
+        self._put(turn_id, None, provider, model)
 
     def record_error(self, turn_id: str, *, reason: Any = "", retryable: Any = None, status_code: Any = None,
                      error: Any = None, provider: Any = "", model: Any = "") -> None:
@@ -115,7 +119,7 @@ class TurnSignals:
         self._put(turn_id, ApiFailure(
             reason=str(reason or ""), retryable=retryable if isinstance(retryable, bool) else None,
             status_code=status, message=_message(error), provider=str(provider or "").lower(),
-            model=str(model or ""), structured_block=_structured_block(error)))
+            model=str(model or ""), structured_block=_structured_block(error)), provider, model)
 
     def ended_on_error(self, turn_id: str) -> Optional[ApiFailure]:
         """The failure the turn ended on, or None when its last provider attempt succeeded (or it
@@ -123,9 +127,15 @@ class TurnSignals:
         with self._lock:
             return self._last.get(turn_id) if turn_id else None
 
+    def route(self, turn_id: str) -> tuple[str, str]:
+        """(provider, model) of the turn's last provider attempt, or ("", "") if none was seen."""
+        with self._lock:
+            return self._route.get(turn_id, ("", "")) if turn_id else ("", "")
+
     def forget(self, turn_id: str) -> None:
         with self._lock:
             self._last.pop(turn_id, None)
+            self._route.pop(turn_id, None)
 
 
 def judge(text: str, request: str = "", *, failure: Optional[ApiFailure] = None,

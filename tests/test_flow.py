@@ -27,11 +27,24 @@ def _start(ctx, msg, turn="t1", session="s1"):
 
 
 def test_register_surface(wired):
-    assert set(wired.hooks) == {"pre_llm_call", "post_llm_call", "api_request_error",
+    assert set(wired.hooks) == {"pre_llm_call", "post_llm_call", "post_api_request", "api_request_error",
                                 "transform_api_error_classification", "transform_llm_output"}
     assert "llm_request" in wired.middleware
     assert "route_explore" in wired.tools and "route" in wired.commands and "model-router" in wired.cli
-    assert wired.hooks["transform_llm_output"][1] is False  # hold_stream off by default
+    assert wired.hooks["transform_llm_output"][1] is False  # hold_stream off: no tiers configured
+
+
+@pytest.mark.parametrize("settings,held", [
+    ({"tiers": [["anthropic/claude-opus-4-8"]]}, True),                         # unset + tiers -> on
+    ({"tiers": [["anthropic/claude-opus-4-8"]], "hold_stream": False}, False),  # explicit wins
+    ({"hold_stream": True}, True),
+    ({}, False),
+])
+def test_hold_stream_follows_tiers_unless_set(settings, held):
+    from tests.conftest import FakeCtx
+    ctx = FakeCtx(settings)
+    plugin.register(ctx)
+    assert ctx.hooks["transform_llm_output"][1] is held
 
 
 def test_quick_turn_goes_to_small_model_with_low_effort(wired):

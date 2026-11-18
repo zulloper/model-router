@@ -46,11 +46,17 @@ class Settings:
     security_sanitize_retry_same_model: bool
     security_fact_lock: bool
     warnings: list[str]
-    ladder: Ladder = dataclasses.field(default_factory=Ladder)  # 0.4.0 tiers (not routed on yet)
+    ladder: Ladder = dataclasses.field(default_factory=Ladder)  # 0.4.0 tiers
+    retry_budget_seconds: Any = "auto"
 
     @property
     def active(self) -> bool:
         return self.mode == "auto" and not self.scope.empty
+
+    @property
+    def ladder_active(self) -> bool:
+        """0.4.0 path: a blocked reply climbs the tiers. When on, it replaces 0.3.0's re-answer."""
+        return self.mode == "auto" and not self.ladder.empty
 
 
 def load_settings(get: Callable[[str, Any], Any]) -> Settings:
@@ -82,6 +88,7 @@ def load_settings(get: Callable[[str, Any], Any]) -> Settings:
         security_fact_lock=bool(get("security_fact_lock", True)),
         warnings=scope.warnings + route_warnings + list(ladder.warnings),
         ladder=ladder,
+        retry_budget_seconds=get("retry_budget_seconds", "auto"),
     )
 
 

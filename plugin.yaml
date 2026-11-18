@@ -25,6 +25,7 @@ provides_tools:
 provides_hooks:
   - pre_llm_call
   - post_llm_call
+  - post_api_request
   - api_request_error
   - transform_api_error_classification
   - transform_llm_output
@@ -142,8 +143,17 @@ config_schema:
       facts listed and the footer reports anything still unconfirmed.
   hold_stream:
     type: bool
-    default: false
     label: Hold streamed replies until the refusal check ran (restart to apply)
+    description: >
+      Unset: on when tiers are configured, off otherwise. Replies that end on a provider error
+      can only be replaced while held. Holding turns off streaming.
+  retry_budget_seconds:
+    type: str
+    default: auto
+    label: Time budget for climbing the ladder (seconds, or auto)
+    description: >
+      auto: a few seconds inside plugins.hook_callback_timeout. Raise that timeout (180-300 is
+      recommended) to give the ladder room; a budget above it is capped to it.
   cooldown_minutes:
     type: int
     default: 30
