@@ -8,8 +8,10 @@ for the task class, so later turns of that kind start on it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import time
 import uuid
 from typing import Any, Optional
 
@@ -35,7 +37,7 @@ SCHEMA = {
             "models": {"type": "array", "items": {"type": "string"},
                        "description": "Optional provider/model ids to try (must be in the allowlist)."},
             "save": {"type": "boolean", "description": "Remember the winner for this task class. Default true."},
-            "timeout_seconds": {"type": "integer", "description": "Per-model time limit. Default 600."},
+            "timeout_seconds": {"type": "integer", "description": "Time limit in seconds for the whole run (models run in parallel); a model still running then is cancelled. Default 600."},
         },
         "required": ["task"],
     },
@@ -82,25 +84,35 @@ def pick_candidates(settings: Settings, router: Router, task_class: str,
     return unique, skipped
 
 
-def _launch(lifecycle: Any, cand: Candidate, task: str, timeout: float, tag: str) -> tuple[Any, Optional[str]]:
+def _launch(lifecycle: Any, cand: Candidate, task: str, tag: str) -> tuple[Any, Optional[str]]:
     """Launch on the calling thread: the live parent is a context variable a pool thread won't see.
-    Children then run concurrently on Hermes' own lifecycle pool."""
+    Children then run concurrently on Hermes' own lifecycle pool. The lifecycle API rejects a
+    per-launch ``timeout_seconds``, so the time limit is enforced in :func:`_collect` instead."""
     from agent.subagent_lifecycle import SubagentLaunchRequest
     try:
         return lifecycle.launch(SubagentLaunchRequest(
             goal=task, model=cand.model, provider=cand.provider, correlation_id=f"{tag}-{cand.key}",
-            metadata={"model_router": "explore"}, timeout_seconds=timeout)), None
+            metadata={"model_router": "explore"})), None
     except Exception as exc:
         return None, str(exc)
 
 
-def _collect(lifecycle: Any, cand: Candidate, handle: Any, launch_error: Optional[str], timeout: float) -> dict:
+def _collect(lifecycle: Any, cand: Candidate, handle: Any, launch_error: Optional[str],
+             deadline: float) -> dict:
+    """Wait for one child until the shared ``deadline`` (children run in parallel, so the limit is
+    one wall-clock window for all of them). A child still running then is cancelled: ``wait`` only
+    stops waiting, it does not stop the child, which would otherwise keep spending tokens."""
     out: dict[str, Any] = {"id": cand.key, "model": cand.model, "provider": cand.provider}
     if handle is None:
         out.update(ok=False, error=launch_error or "launch failed")
         return out
     try:
-        lifecycle.wait(handle, timeout_seconds=timeout + 30)
+        waited = lifecycle.wait(handle, timeout_seconds=max(1.0, deadline - time.monotonic()))
+        if getattr(waited, "timed_out", False):
+            with contextlib.suppress(Exception):
+                lifecycle.cancel(handle, reason="model-router: route_explore time limit reached")
+            out.update(ok=False, state="TIMED_OUT", error="time limit reached; subagent cancelled")
+            return out
         res = lifecycle.result(handle)
     except Exception as exc:
         out.update(ok=False, error=str(exc))
@@ -168,8 +180,9 @@ def make_handler(ctx: Any, router: Router, settings_fn):
         timeout = float(params.get("timeout_seconds") or 600)
         lifecycle = ctx.subagent_lifecycle
         tag = f"mr-{uuid.uuid4().hex[:8]}"
-        launched = [(c, *_launch(lifecycle, c, task, timeout, tag)) for c in cands]
-        results = [_collect(lifecycle, c, h, err, timeout) for c, h, err in launched]
+        launched = [(c, *_launch(lifecycle, c, task, tag)) for c in cands]
+        deadline = time.monotonic() + timeout
+        results = [_collect(lifecycle, c, h, err, deadline) for c, h, err in launched]
         winner_id, scores = _judge(ctx.llm, task, results, task_class)
         winner = next((c for c in cands if c.key == winner_id), None)
         if winner is not None and params.get("save", True):
