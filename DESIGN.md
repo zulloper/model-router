@@ -273,8 +273,8 @@ plugins.entries.model-router.settings:
 - [x] P4. enrich 재시도 (`enrich.py`, 의미 델타 사전) — §16
 - [x] P5. 병렬 + 종합 (시간 예산 안에서) — §17
 - [x] P6b. 티어 승격 자동화 (`promote.py`) — §18
-- [ ] P7. classify.py + cross_provider/private_switch.py 제거, 잔재 정리
-- [ ] P8. slash/cli/desktop 티어 편집 UI
+- [x] P7. 0.3.0 방식 완전 제거 — §19
+- [x] P8. `/route`, CLI, Desktop 티어 편집 화면 — §19 (P7과 한 번에: 아래 이유)
 - [ ] P9. README 재작성, 마이그레이션 노트, `hook_callback_timeout` 설치 안내
 
 테스트 원칙(§12에서 나온 교훈):
@@ -490,3 +490,42 @@ Requirements for the answer:
 - 계획과 달라진 점: §11은 "health 통계 기반"이라고 했지만 0.3.0의 health 카운터(누적·구분 없음) 대신 시도
   기록을 썼다. §6.1의 지적(거절·불완전·오류가 한 칸에 섞임)을 피하려는 것이다. P2에서 걱정한 "분모 없음"
   문제는 승격에는 해당하지 않는다 — plain 시도 하나하나가 표본이다.
+
+## 19. P7+P8 결과: 0.3.0 방식 제거와 티어 화면 (2026-11-19)
+
+결정(사용자 승인): 0.3.0 방식(`scope` + 작업 종류별 `routes`)을 남기지 않고 완전히 없앤다. 두 방식을 같이
+두면 처음 문제였던 "설정 축이 여러 개"로 돌아간다. 0.3.x 설정을 티어로 옮기는 안내는 P9.
+
+**P7과 P8을 한 번에 한 이유**: 플러그인이 이 작업 폴더에 링크돼 있어 실제 Hermes가 작업 트리를 그대로
+읽는다. CLI와 Desktop 백엔드가 `scope`/`routes`를 직접 읽고 쓰므로, 런타임만 먼저 지우면 그 사이 Desktop
+설정 페이지가 깨진다.
+
+지운 것: `classify.py`, `private_switch.py`(cross_provider), `reasoning.py`(요청마다 모델·effort를 바꾸던
+`llm_request` 미들웨어), `security.py`(0.3.0 프리앰블; 가드레일 문구 목록만 `refusal.py`로), `router.py`
+(→ 설정만 `settings.py`로), `sanitize.py`의 L1~L3 단계 코드, `scope.py`의 허용 목록·라우트(→ 후보 파싱만
+`candidate.py`로), `/route pin|unpin|prefer|clear|sec`, Desktop의 허용 모델·Routes 페이지, 백엔드 `/prefer`.
+
+남긴 것과 바뀐 것:
+
+- 훅 5개: `pre_llm_call`, `post_api_request`, `api_request_error`, `transform_api_error_classification`,
+  `transform_llm_output`. 미들웨어 없음 — 0.4.0은 프로필 모델의 요청을 절대 고치지 않는다.
+- `report.py`: `/route`, CLI `show`, Desktop 백엔드가 같은 설명·통계 함수를 쓴다(셋이 따로 놀지 않게).
+- `/route [status|auto|off|stats|reset]`. `stats`는 시도 기록 기준, `reset`은 승격만 지운다(기록은 남김).
+- `hermes model-router setup`: 티어마다 체크리스트로 모델을 고른다(최대 4티어, 아무것도 안 고르면 끝).
+- `route_explore`: 사다리의 모델끼리 비교만 하고 아무것도 저장하지 않는다(작업 종류가 없으므로).
+  판정 기준은 "코드를 요청했으면 완전한 코드가 없는 답은 낮게".
+- `hold_stream`: `auto`/`on`/`off` 문자열 설정. Desktop 저장 함수가 값 지우기를 지원하지 않아서다.
+  0.3.x의 true/false도 계속 읽는다.
+- 0.3.x 설정 키가 남아 있으면 무시하지 않고 경고한다(`settings.LEGACY_KEYS`).
+- Desktop: General / Tiers / Stats 세 페이지(한국어 포함). Tiers는 티어 추가·삭제, 모델 추가(목록 선택 또는
+  직접 입력), 순서 위아래, 승격 표시. Stats는 모델별 원문·보강 결과와 마지막 실패, 승격 초기화.
+- `plugin.yaml` 0.4.0. 선언한 권한 목록은 그대로라 기존 승인이 유지된다(확인함).
+
+확인한 것:
+
+- 테스트 153개, 건너뜀 0. Desktop 백엔드 테스트가 **처음으로 실제로 돌았다** — 그동안 테스트 환경에
+  `ruamel.yaml`이 없어 늘 건너뛰어졌다.
+- 실제 Hermes: `hermes model-router show` 정상, `plugins list`에 0.4.0, 게이트웨이 재로딩 시 경고 없음,
+  권한 승인 유지.
+- Desktop 화면 JS는 문법 검사와 컴포넌트 사용 범위(기존 화면이 쓰던 것만)까지 확인. **화면을 눈으로
+  보지는 못했다.**

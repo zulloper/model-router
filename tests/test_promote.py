@@ -7,7 +7,7 @@ from model_router_plugin import promote
 from model_router_plugin.attempts import ENRICH, ORIGIN, PLAIN, Attempt, AttemptLog
 from model_router_plugin.ladder import LadderRunner
 from model_router_plugin.outcome import TurnSignals
-from model_router_plugin.router import load_settings
+from model_router_plugin.settings import load_settings
 from model_router_plugin.tiers import parse_tiers
 from tests.conftest import FakeCtx, FakeState
 

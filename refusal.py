@@ -1,13 +1,14 @@
-"""Soft-refusal detection: a normal reply whose text declines the task.
+"""Soft-refusal detection: a normal reply whose text declines the task (used by :mod:`outcome`).
 
 Hermes already catches hard refusals (``finish_reason: content_filter``, Anthropic ``refusal``,
 Bedrock guardrails). This catches the polite kind. It is deliberately conservative: only short
 replies whose opening declines count, so a long answer that mentions "I can't" in passing does not.
 
-``task_class == "sec"`` widens the net, because security answers decline differently: they are
-longer, and they often promise a "conceptual overview" or declare the code proprietary/under NDA
-instead of saying "I can't". ``looks_like_degraded`` is the other half for that class: an answer
-that was asked for a PoC and contains no code at all is a soft failure even when it is polite.
+``security=True`` widens the net, because security answers decline differently: they are longer,
+and they often promise a "conceptual overview" or declare the code proprietary/under NDA instead of
+saying "I can't". ``degraded_reason`` is the other half: an answer that was asked for code and
+contains none is a soft failure even when it is polite. Both count only when the request asks for
+code (``wants_code``), so an ordinary reply that mentions an NDA is not a refusal.
 """
 
 from __future__ import annotations
@@ -89,10 +90,6 @@ def refusal_match(text: str, security: bool = False, request: Optional[str] = No
     return None
 
 
-def looks_like_refusal(text: str, task_class: str = "") -> bool:
-    return refusal_match(text, task_class == "sec") is not None
-
-
 def degraded_reason(text: str, request: str, security: bool = False) -> Optional[str]:
     """Why a reply that was asked for code/a PoC counts as prose only (or hedge-heavy), or None.
     Security turns only: elsewhere a prose answer is usually fine."""
@@ -111,8 +108,12 @@ def degraded_reason(text: str, request: str, security: bool = False) -> Optional
     return None
 
 
-def looks_like_degraded(text: str, request: str, task_class: str = "") -> bool:
-    return degraded_reason(text, request, task_class == "sec") is not None
+# Error text that means "the model's own policy stopped this", for providers that report a block as
+# a normal error string. Generic on purpose; a false positive costs one climb of the ladder.
+GUARDRAIL_DEFAULTS = (
+    "content policy", "content filter", "safety system", "guardrail", "guard rail",
+    "blocked by policy", "flagged", "cyber", "refusal", "refused",
+)
 
 
 def matches_guardrail(message: str, extra_patterns: tuple[str, ...]) -> bool:

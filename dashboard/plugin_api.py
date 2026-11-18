@@ -1,14 +1,14 @@
 """Model Router backend for the Desktop settings pages, mounted at ``/api/plugins/model-router/``.
 
 The web server scopes every request to the profile the Desktop has active (``HERMES_HOME``), so
-each route reads and writes *that* profile's settings and state.
+each route reads and writes *that* profile's settings and state — the same plugin-data folder the
+gateway's ``ctx.state`` uses, so promotions and the attempt log are shared.
 
 Routes:
-    GET  /state      settings, provider/model inventory, routes as the router sees them, warnings,
-                     per-model health and learned preferences
+    GET  /state      settings, the ladder as used (with promotions), model inventory, per-model
+                     stats from the attempt log, time budget, warnings
     PUT  /settings   {"values": {...}} — validated, then written with Hermes' plugin-settings writer
-    POST /prefer     {"task_class": "deep", "candidate": "provider/model@effort" | null}
-    POST /reset      forget per-model stats and learned preferences
+    POST /reset      forget learned promotions (the attempt log is kept)
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import importlib
 import importlib.util
 import logging
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -29,18 +28,15 @@ router = APIRouter()
 PLUGIN_ID = "model-router"
 _ROOT = Path(__file__).resolve().parents[1]
 _PKG = "hermes_dashboard_plugin_model_router"
-_SETTING_KEYS = ("mode", "scope", "routes", "cross_provider", "classifier", "soft_refusal_retry",
-                 "cooldown_minutes", "max_explore", "hold_stream", "extra_guardrail_patterns",
-                 "degraded_retry", "security_preamble", "security_roe", "security_preamble_extra",
-                 "security_guardrail_defaults", "security_sanitize", "security_sanitize_max_level",
-                 "security_sanitize_llm", "security_sanitize_retry_same_model", "security_fact_lock")
+_BOOL_KEYS = ("parallel", "synthesize", "enrich_on_retry", "auto_promote", "security_guardrail_defaults")
+_SETTING_KEYS = ("mode", "tiers", "hold_stream", "retry_budget_seconds", "security_roe", "extra_guardrail_patterns",
+                 "max_explore") + _BOOL_KEYS
 
 
-def _pkg():
-    """The plugin package itself (scope/router/cli), loaded by path: the web server imports this file
-    on its own, so relative imports are not available here."""
-    mod = sys.modules.get(_PKG)
-    if mod is None:
+def _mod(name: str):
+    """A module of the plugin package, loaded by path: the web server imports this file on its own,
+    so relative imports are not available here."""
+    if _PKG not in sys.modules:
         spec = importlib.util.spec_from_file_location(_PKG, _ROOT / "__init__.py",
                                                       submodule_search_locations=[str(_ROOT)])
         mod = importlib.util.module_from_spec(spec)
@@ -50,8 +46,7 @@ def _pkg():
         except Exception:
             sys.modules.pop(_PKG, None)
             raise
-    return (importlib.import_module(f"{_PKG}.scope"), importlib.import_module(f"{_PKG}.router"),
-            importlib.import_module(f"{_PKG}.cli"))
+    return importlib.import_module(f"{_PKG}.{name}")
 
 
 def _config() -> dict:
@@ -76,55 +71,49 @@ def _enabled(cfg: dict) -> bool:
     return PLUGIN_ID in enabled and PLUGIN_ID not in (plugins.get("disabled") or [])
 
 
-def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]]) -> dict:
-    scope_mod, router_mod, _ = _pkg()
+def _hook_timeout(cfg: dict) -> float:
+    raw = (cfg.get("plugins") or {}).get("hook_callback_timeout")
+    try:
+        value = 30.0 if raw is None else float(raw)
+    except (TypeError, ValueError):
+        value = 30.0
+    return 30.0 if value < 0 else min(value, 600.0)
+
+
+def build_state(cfg: dict, state: Any, inventory: dict[str, list[str]], attempts: list) -> dict:
+    settings_mod, report, promote, ladder_mod = (_mod("settings"), _mod("report"), _mod("promote"),
+                                                 _mod("ladder"))
     raw = _settings_raw(cfg)
-    settings = router_mod.load_settings(lambda key, default=None: raw.get(key, default))
-    health = state.get("health", default={}) or {}
-    preferred = state.get("preferred", default={}) or {}
-    now = time.time()
-    cooling = {}
-    for key, h in health.items():
-        streak, last = int(h.get("streak", 0)), float(h.get("last_fail", 0.0))
-        left = settings.cooldown_minutes * 60 - (now - last)
-        if streak >= 2 and left > 0:
-            cooling[key] = int(left // 60) + 1
+    s = settings_mod.load_settings(lambda key, default=None: raw.get(key, default))
+    promotions = promote.Promotions(state).get()
+    hold = settings_mod.hold_stream_setting(raw.get("hold_stream"))
+    timeout = _hook_timeout(cfg)
     model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     return {
         "plugin_enabled": _enabled(cfg),
         "current": {"provider": str(model.get("provider") or ""), "model": str(model.get("default") or "")},
         "settings": {
-            "mode": settings.mode, "cross_provider": settings.cross_provider,
-            "classifier": settings.classifier, "soft_refusal_retry": settings.soft_refusal_retry,
-            "cooldown_minutes": settings.cooldown_minutes, "max_explore": settings.max_explore,
-            "degraded_retry": settings.degraded_retry, "security_preamble": settings.security_preamble,
-            "security_roe": settings.security_roe,
-            "security_preamble_extra": settings.security_preamble_extra,
-            "security_guardrail_defaults": settings.security_guardrail_defaults,
-            "security_sanitize": settings.security_sanitize,
-            "security_sanitize_max_level": settings.security_sanitize_max_level,
-            "security_sanitize_llm": settings.security_sanitize_llm,
-            "security_sanitize_retry_same_model": settings.security_sanitize_retry_same_model,
-            "security_fact_lock": settings.security_fact_lock,
-            "extra_guardrail_patterns": list(settings.extra_guardrail_patterns),
-            "scope": settings.scope.providers,
-            "routes": {cls: [str(c) for c in raw_routes]
-                       for cls, raw_routes in (raw.get("routes") or {}).items()
-                       if isinstance(raw_routes, list)},
+            "mode": s.mode,
+            "tiers": [[c.key for c in tier] for tier in s.ladder.tiers],
+            "parallel": s.parallel, "synthesize": s.synthesize, "enrich_on_retry": s.enrich_on_retry,
+            "auto_promote": s.auto_promote, "security_roe": s.security_roe, "hold_stream": hold,
+            "retry_budget_seconds": str(s.retry_budget_seconds or "auto"),
+            "security_guardrail_defaults": s.security_guardrail_defaults,
+            "extra_guardrail_patterns": list(s.extra_guardrail_patterns), "max_explore": s.max_explore,
         },
-        "effective_routes": {cls: [str(c) for c in cands] for cls, cands in settings.routes.items()},
+        "ladder": report.ladder_rows(s, promotions),
+        "promotions": promotions,
+        "hold_effective": hold == "on" or (hold == "auto" and not s.ladder.empty),
+        "time": {"hook_timeout": timeout, "budget": ladder_mod.ladder_budget(timeout, s.retry_budget_seconds)},
         "inventory": inventory,
-        "warnings": settings.warnings + scope_mod.fallback_warnings(cfg, settings.scope),
-        "health": health, "preferred": preferred, "cooling": cooling,
-        "limits": {"max_providers": scope_mod.MAX_PROVIDERS, "task_classes": list(scope_mod.TASK_CLASSES),
-                   "efforts": [e for e in scope_mod.EFFORTS if e != "none"],
-                   "default_effort": scope_mod.DEFAULT_EFFORT},
+        "stats": report.model_stats(attempts),
+        "warnings": s.warnings,
+        "limits": {"tier_size_hint": _mod("tiers").TIER_SIZE_HINT},
     }
 
 
 def clean_values(values: Any) -> dict:
     """Validate a settings write. Raises ValueError with a message the page shows."""
-    scope_mod, _, _ = _pkg()
     if not isinstance(values, dict):
         raise ValueError("values must be an object")
     out: dict[str, Any] = {}
@@ -132,48 +121,48 @@ def clean_values(values: Any) -> dict:
         if key not in _SETTING_KEYS:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = value
-    if "scope" in out:
-        parsed = scope_mod.parse_scope(out["scope"])
-        if parsed.warnings:
-            raise ValueError("; ".join(parsed.warnings))
-        out["scope"] = parsed.providers
-    if "routes" in out:
-        routes = out["routes"]
-        if not isinstance(routes, dict):
-            raise ValueError("routes must be an object")
-        scope = scope_mod.parse_scope(out.get("scope", _settings_raw(_config()).get("scope", {})))
-        cleaned = {}
-        for cls, entries in routes.items():
-            if cls not in scope_mod.TASK_CLASSES:
-                raise ValueError(f"unknown task class {cls!r}")
+    if "tiers" in out:
+        tiers = out["tiers"]
+        if not isinstance(tiers, list):
+            raise ValueError("tiers must be a list of tiers")
+        candidate = _mod("candidate")
+        seen: set[str] = set()
+        cleaned: list[list[str]] = []
+        for number, tier in enumerate(tiers, start=1):
+            if not isinstance(tier, list):
+                raise ValueError(f"tier {number} must be a list of provider/model")
             keep = []
-            for entry in entries or []:
-                cand = scope_mod.parse_candidate(entry)
+            for entry in tier:
+                cand = candidate.parse_candidate(entry)
                 if cand is None:
-                    raise ValueError(f"routes.{cls}: can't read {entry!r}")
-                if not scope.allows_candidate(cand):
-                    raise ValueError(f"routes.{cls}: {cand.key} is not in the allowlist")
-                keep.append(str(cand))
+                    raise ValueError(f"tier {number}: can't read {entry!r} (want provider/model)")
+                if cand.key in seen:
+                    raise ValueError(f"tier {number}: {cand.key} is already on the ladder")
+                seen.add(cand.key)
+                keep.append(cand.key)
             if keep:
-                cleaned[cls] = keep
-        out["routes"] = cleaned
+                cleaned.append(keep)
+        out["tiers"] = cleaned
     if "mode" in out and out["mode"] not in ("auto", "off"):
         raise ValueError("mode must be auto or off")
-    if "classifier" in out and out["classifier"] not in ("rules", "hybrid", "llm"):
-        raise ValueError("classifier must be rules, hybrid or llm")
-    for key in ("cross_provider", "soft_refusal_retry", "degraded_retry", "security_preamble",
-                "security_guardrail_defaults", "hold_stream", "security_sanitize",
-                "security_sanitize_llm", "security_sanitize_retry_same_model", "security_fact_lock"):
+    if "hold_stream" in out and out["hold_stream"] not in ("auto", "on", "off"):
+        raise ValueError("hold_stream must be auto, on or off")
+    for key in _BOOL_KEYS:
         if key in out and not isinstance(out[key], bool):
             raise ValueError(f"{key} must be true or false")
-    if "security_sanitize_max_level" in out:
-        try:
-            out["security_sanitize_max_level"] = max(1, min(3, int(out["security_sanitize_max_level"])))
-        except (TypeError, ValueError):
-            raise ValueError("security_sanitize_max_level must be a number") from None
-    for key, cap in (("security_roe", 8000), ("security_preamble_extra", 4000)):
-        if key in out:
-            out[key] = str(out[key] or "")[:cap]
+    if "retry_budget_seconds" in out:
+        text = str(out["retry_budget_seconds"] or "auto").strip().lower()
+        if text != "auto":
+            try:
+                number = float(text)
+            except ValueError:
+                raise ValueError("retry_budget_seconds must be auto or a number of seconds") from None
+            if number <= 0:
+                raise ValueError("retry_budget_seconds must be positive")
+            text = f"{number:g}"
+        out["retry_budget_seconds"] = text
+    if "security_roe" in out:
+        out["security_roe"] = str(out["security_roe"] or "")[:8000]
     if "extra_guardrail_patterns" in out:
         patterns = out["extra_guardrail_patterns"]
         if isinstance(patterns, str):
@@ -181,12 +170,11 @@ def clean_values(values: Any) -> dict:
         if not isinstance(patterns, list):
             raise ValueError("extra_guardrail_patterns must be a list of phrases")
         out["extra_guardrail_patterns"] = [str(p).strip().lower() for p in patterns if str(p).strip()]
-    for key, low, high in (("cooldown_minutes", 0, 1440), ("max_explore", 1, 8)):
-        if key in out:
-            try:
-                out[key] = max(low, min(high, int(out[key])))
-            except (TypeError, ValueError):
-                raise ValueError(f"{key} must be a number") from None
+    if "max_explore" in out:
+        try:
+            out["max_explore"] = max(1, min(8, int(out["max_explore"])))
+        except (TypeError, ValueError):
+            raise ValueError("max_explore must be a number") from None
     return out
 
 
@@ -196,18 +184,26 @@ def _save(values: dict) -> None:
 
 
 def _inventory(cfg: dict) -> dict[str, list[str]]:
-    _, _, cli = _pkg()
     try:
-        return cli.inventory(cfg)
+        return _mod("cli").inventory(cfg)
     except Exception as exc:
         _log.warning("model-router: provider inventory failed: %s", exc)
         return {}
 
 
+def _attempts(state: Any) -> list:
+    try:
+        return _mod("attempts").AttemptLog(Path(state.data_dir) / "attempts.jsonl").recent(2000)
+    except Exception as exc:
+        _log.warning("model-router: could not read the attempt log: %s", exc)
+        return []
+
+
 @router.get("/state")
 def get_state() -> dict:
     cfg = _config()
-    return build_state(cfg, _plugin_state(), _inventory(cfg))
+    state = _plugin_state()
+    return build_state(cfg, state, _inventory(cfg), _attempts(state))
 
 
 @router.put("/settings")
@@ -225,30 +221,7 @@ def put_settings(body: dict) -> dict:
     return get_state()
 
 
-@router.post("/prefer")
-def post_prefer(body: dict) -> dict:
-    scope_mod, router_mod, _ = _pkg()
-    cls = (body or {}).get("task_class")
-    if cls not in scope_mod.TASK_CLASSES:
-        raise HTTPException(status_code=400, detail="unknown task class")
-    state = _plugin_state()
-    preferred = dict(state.get("preferred", default={}) or {})
-    raw = (body or {}).get("candidate")
-    if raw:
-        cand = scope_mod.parse_candidate(raw)
-        scope = scope_mod.parse_scope(_settings_raw(_config()).get("scope", {}))
-        if cand is None or not scope.allows_candidate(cand):
-            raise HTTPException(status_code=400, detail=f"{raw} is not in the allowlist")
-        preferred[cls] = str(cand)
-    else:
-        preferred.pop(cls, None)
-    state.set("preferred", preferred)
-    return get_state()
-
-
 @router.post("/reset")
 def post_reset() -> dict:
-    state = _plugin_state()
-    state.set("health", {})
-    state.set("preferred", {})
+    _mod("promote").Promotions(_plugin_state()).clear()
     return get_state()

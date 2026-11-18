@@ -29,7 +29,7 @@ from typing import Any, Callable, Optional
 from . import enrich, promote
 from .attempts import ENRICH, ORIGIN, PLAIN, SYNTH, Attempt, AttemptLog, prompt_hash
 from .outcome import BLOCKED, DEGRADED, OK, TurnSignals, Verdict, judge
-from .scope import Candidate
+from .candidate import Candidate
 
 logger = logging.getLogger(__name__)
 

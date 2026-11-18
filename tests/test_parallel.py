@@ -9,7 +9,7 @@ import model_router_plugin.ladder as ladder_mod
 from model_router_plugin.attempts import AttemptLog
 from model_router_plugin.ladder import LadderRunner
 from model_router_plugin.outcome import TurnSignals
-from model_router_plugin.router import load_settings
+from model_router_plugin.settings import load_settings
 from tests.conftest import FakeCtx
 
 REFUSAL = "I'm sorry, but I can't help with that."

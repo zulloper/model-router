@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from model_router_plugin.router import load_settings
+from model_router_plugin.settings import load_settings
 from model_router_plugin.tiers import TIER_SIZE_HINT, parse_tiers
 
 

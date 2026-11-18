@@ -10,7 +10,7 @@ The ladder is also the allowlist: nothing outside it is ever called. Parsing nev
 entry that can't be read is dropped with a warning, so a typo costs one model, not the turn.
 
 This module must not depend on task classification (``classify.py``): the ladder is one ladder for
-every request, and ``classify.py`` goes away in P7.
+every request (task classification was removed in 0.4.0).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Iterable, Mapping, Optional
 
-from .scope import Candidate, parse_candidate
+from .candidate import Candidate, parse_candidate
 
 # A larger tier still works, but every model in it is called in parallel inside one hook's time
 # budget (DESIGN.md §3.1), so it is flagged.

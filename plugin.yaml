@@ -1,152 +1,52 @@
 name: model-router
 label: Model Router
 kind: standalone
-version: 0.3.0
+version: 0.4.0
 manifest_version: 2
 api_version: 1
 author: zulloper
 license: MIT
 description: >
-  Picks a model and reasoning effort for each turn from the kind of task you
-  give, but only from an allowlist you check off (up to 3 providers and the
-  models you choose on each). When a model is stopped by a guardrail, a
-  refusal or a provider error, it moves to the next allowed model; a
-  route_explore tool runs the same task on several allowed models as
-  subagents and remembers the winner. Security work (CVE analysis, exploits,
-  PoCs, red team) gets its own task class, an authorization/output-contract
-  preamble, refusal and empty-answer retries, and an NVD lookup tool.
-  Public plugin API by default; switching the session across providers is an
-  opt-in that uses Hermes internals.
+  A tier ladder for blocked replies. The profile's own model answers every
+  turn; when a reply is blocked (a guardrail, a refusal, an answer without the
+  code that was asked for, a model error), the models you put on tier 1 are
+  asked the same request in parallel, then tier 2, and so on — each tier first
+  as written, then once more enriched with your rules of engagement, an output
+  contract and locked facts. Good answers from a tier are combined, and the
+  result replaces the blocked reply. Models that keep winning move up the
+  ladder. Also: an NVD lookup tool and a model comparison tool. Public plugin
+  API only.
 requires_hermes: ">=0.22.5"
-tags: [routing, models, reasoning, fallback, guardrails, security, cve, exploit, redteam]
+tags: [routing, models, fallback, guardrails, refusal, security, cve]
 provides_tools:
   - route_explore
   - cve_lookup
 provides_hooks:
   - pre_llm_call
-  - post_llm_call
   - post_api_request
   - api_request_error
   - transform_api_error_classification
   - transform_llm_output
-provides_middleware:
-  - llm_request
 capabilities:
-  - llm.model_override     # soft-refusal re-answer / explore judge on an allowed model
-  - llm.provider_override  # ... which may sit on another allowed provider
+  - llm.model_override     # retries and synthesis run on the ladder's models
+  - llm.provider_override  # ... which may sit on another provider than the session's
 config_schema:
   mode:
     type: str
     choices: ["auto", "off"]
     default: auto
-    label: Routing mode
-    description: "auto: pick a model per turn. off: leave the session's model alone."
-  scope:
-    type: dict
-    default: {}
-    label: Allowed providers and models
-    description: >
-      The allowlist. Up to 3 providers, each with the models routing may use,
-      e.g. {"openai-codex": ["gpt-6.2-sol"], "anthropic": ["claude-opus-4-8"]}.
-      Nothing outside it is ever picked. Edit with `hermes model-router setup`.
-  routes:
-    type: dict
-    default: {}
-    label: Routes per task class
-    description: >
-      Ordered candidates per task class (quick, standard, code, deep, sec) as
-      "provider/model@effort", e.g. {"sec": ["anthropic/claude-opus-4-8@xhigh"]}.
-      Entries outside the allowlist are ignored. Empty: built from the allowlist.
+    label: Climb the ladder on blocked replies
+    description: "auto: a blocked reply climbs the tiers. off: replies stay as they are."
   tiers:
     type: list
     default: []
-    label: Tier ladder (0.4.0, in development)
+    label: Tier ladder
     description: >
-      Ordered tiers, each a list of "provider/model" entries, e.g.
-      [["openai-codex/gpt-6.2-sol"], ["anthropic/claude-opus-4-8"]]. When a reply is blocked,
-      the models of tier 1 are tried first, then tier 2, and so on. The ladder is also the
-      allowlist. Parsed and validated only for now; routing still uses scope/routes.
-  cross_provider:
-    type: bool
-    default: false
-    label: Switch the session across providers (uses Hermes internals)
-    description: >
-      Off: routing only changes the model within the provider the session is
-      on (public API). On: the session itself is moved to another allowed
-      provider when the route says so. May break on a Hermes update; falls
-      back to off if the internals are missing.
-  classifier:
-    type: str
-    choices: [rules, hybrid, llm]
-    default: rules
-    label: Task classifier
-    description: "rules: keywords and length, no extra call. hybrid: ask a model only when rules are unsure. llm: always ask a model."
-  soft_refusal_retry:
-    type: bool
-    default: true
-    label: Re-answer soft refusals with another allowed model
-  degraded_retry:
-    type: bool
-    default: true
-    label: Redo security answers that skip the requested code
-    description: >
-      On sec turns, an answer that was asked for a PoC/code but is prose only is retried on
-      another allowed model with an output contract.
-  security_preamble:
-    type: bool
-    default: true
-    label: Inject the security preamble on sec turns
-    description: >
-      Adds authorization, an output contract (complete runnable PoC, exact offsets, no hedging)
-      and a CVE workflow to the system prompt of security turns. Does not remove provider guardrails.
-  security_roe:
-    type: str
-    default: ""
-    label: Rules of engagement to include
-    description: Target/scope/period/contacts. Models refuse less when authorization is explicit.
-  security_preamble_extra:
-    type: str
-    default: ""
-    label: Extra standing instructions
-    description: Appended to the security preamble, e.g. tooling or format preferences.
-  security_guardrail_defaults:
-    type: bool
-    default: true
-    label: Treat generic "content filter / safety / cyber" errors as guardrails
-  security_sanitize:
-    type: bool
-    default: true
-    label: Guardrail round-trip (sanitize a refused request and retry)
-    description: >
-      After a guardrail/refusal on a sec turn, rephrase the request (framing terms only; facts
-      stay verbatim), retry (same model first where possible), then restore the answer's terms
-      and check the locked facts. Levels escalate: L1 wording, L2 walkthrough structure, L3 split.
-  security_sanitize_max_level:
-    type: int
-    default: 3
-    label: Highest sanitize level (1-3)
-  security_sanitize_llm:
-    type: bool
-    default: false
-    label: Let a model rephrase the refused request (L2+)
-    description: One extra structured call; deterministic rules run first and remain the fallback.
-  security_sanitize_retry_same_model:
-    type: bool
-    default: true
-    label: Retry the refused model at the next level before switching
-  security_fact_lock:
-    type: bool
-    default: true
-    label: Lock CVE ids, versions, offsets, hashes and symbols
-    description: >
-      Locked facts are never substituted; if the answer drops one, it is retried with the missing
-      facts listed and the footer reports anything still unconfirmed.
-  hold_stream:
-    type: bool
-    label: Hold streamed replies until the refusal check ran (restart to apply)
-    description: >
-      Unset: on when tiers are configured, off otherwise. Replies that end on a provider error
-      can only be replaced while held. Holding turns off streaming.
+      Ordered tiers, each a list of "provider/model", e.g.
+      [["openai-codex/gpt-6.2-sol"], ["anthropic/claude-opus-4-8", "xai/grok-5"]].
+      Tier 1 is asked first. Within a tier the order is the priority. The ladder
+      is also the allowlist: nothing else is called. Edit with
+      `hermes model-router setup` or the Desktop settings pages.
   parallel:
     type: bool
     default: true
@@ -159,6 +59,14 @@ config_schema:
     description: >
       One more call, on the first good answer's model, merges the tier's good answers. Skipped
       when time is short; if it fails, the first good answer is used.
+  enrich_on_retry:
+    type: bool
+    default: true
+    label: Retry each tier once more with an enriched request
+    description: >
+      After a tier's models fail on the request as written: quote your rules of engagement (if
+      set), add an output contract when code was asked for, reword framing terms (facts stay
+      verbatim and are checked in the answer), and ask the tier again.
   auto_promote:
     type: bool
     default: true
@@ -166,14 +74,21 @@ config_schema:
     description: >
       Learned from the attempt log (requests as written only). Never rewrites tiers and never puts a
       model below where you placed it; /route shows promotions and /route reset clears them.
-  enrich_on_retry:
-    type: bool
-    default: true
-    label: Retry each tier once more with an enriched request
+  security_roe:
+    type: str
+    default: ""
+    label: Rules of engagement
     description: >
-      After a tier's models fail on the request as written: add the user's rules of engagement
-      (security_roe, if set), an output contract when code was asked for, reword framing terms
-      (facts stay verbatim and are checked in the answer), and ask the tier again.
+      Target, scope, period, approver. Quoted (first 600 characters) in enriched retries; with none
+      set, no authorization is ever claimed.
+  hold_stream:
+    type: str
+    choices: ["auto", "on", "off"]
+    default: auto
+    label: Hold replies until the blocked-reply check ran (restart to apply)
+    description: >
+      auto: on when tiers are set. Replies that end on a provider error can only be replaced while
+      held. Holding turns off streaming.
   retry_budget_seconds:
     type: str
     default: auto
@@ -181,16 +96,16 @@ config_schema:
     description: >
       auto: a few seconds inside plugins.hook_callback_timeout. Raise that timeout (180-300 is
       recommended) to give the ladder room; a budget above it is capped to it.
-  cooldown_minutes:
-    type: int
-    default: 30
-    label: Minutes a model sits out after failing twice in a row
-  max_explore:
-    type: int
-    default: 3
-    label: Models route_explore runs at most
+  security_guardrail_defaults:
+    type: bool
+    default: true
+    label: Treat "content filter / safety / cyber" provider errors as guardrail blocks
   extra_guardrail_patterns:
     type: list
     default: []
     label: Extra guardrail phrases
     description: Lower-case phrases in a provider error that mean a guardrail stopped the request.
+  max_explore:
+    type: int
+    default: 3
+    label: Models route_explore compares at most

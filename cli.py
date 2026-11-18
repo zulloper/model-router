@@ -1,15 +1,10 @@
-"""``hermes model-router setup | show``: check off the allowlist and build the routes.
+"""``hermes model-router setup | show``: put models on the tier ladder.
 
-``setup`` walks three steps in the terminal:
+``setup`` asks, tier by tier, which models a blocked reply should try next (a checklist of the
+providers' models that have credentials, or a typed ``provider/model``). Checking nothing ends the
+ladder. ``show`` prints the current ladder and needs no terminal.
 
-1. Providers: a checklist of providers that have credentials (plus the ones config.yaml names);
-   at most 3 may be checked.
-2. Models: for each checked provider, a checklist of its models; a model can also be typed in.
-3. Routes: for each task class, the model to try first and its reasoning effort. The other allowed
-   models follow as backups.
-
-Menus use Hermes' curses components when available, else numbered prompts. ``show`` prints the
-current setup and needs no terminal.
+Menus use Hermes' curses components when available, else numbered prompts.
 """
 
 from __future__ import annotations
@@ -17,20 +12,14 @@ from __future__ import annotations
 import sys
 from typing import Any, Callable, Iterable, Optional
 
-from .router import load_settings
-from .scope import DEFAULT_EFFORT, EFFORTS, MAX_PROVIDERS, TASK_CLASSES, parse_scope
-from .slash import describe
+from . import report
+from .candidate import parse_candidate
+from .settings import load_settings
 
+MAX_WIZARD_TIERS = 4
 _NO_TTY = ("`hermes model-router setup` needs an interactive terminal.\n"
-           "Print the current setup with `hermes model-router show`, or edit\n"
-           "plugins.entries.model-router.settings.scope / routes in config.yaml.")
-_CLASS_HELP = {
-    "quick": "short lookups, translation, summaries",
-    "standard": "everyday writing and explanations",
-    "code": "writing, fixing and reviewing code",
-    "deep": "hard reasoning, design, analysis, long tasks",
-    "sec": "CVE analysis, exploit/PoC, reversing, red team",
-}
+           "Print the current ladder with `hermes model-router show`, or edit\n"
+           "plugins.entries.model-router.settings.tiers in config.yaml.")
 
 
 # --- menus ------------------------------------------------------------------------------------
@@ -54,23 +43,6 @@ def _checklist(title: str, items: list[str], selected: set[int]) -> Optional[set
         if part.isdigit() and 1 <= int(part) <= len(items):
             out.add(int(part) - 1)
     return out
-
-
-def _radio(title: str, items: list[str], selected: int = 0) -> int:
-    try:
-        from hermes_cli.curses_ui import curses_radiolist
-        return int(curses_radiolist(title, items, selected=selected, cancel_returns=-1))
-    except Exception:
-        pass
-    print(f"\n{title}")
-    for i, item in enumerate(items, 1):
-        print(f"  {i:>2}. {'(•)' if i - 1 == selected else '( )'} {item}")
-    raw = input(f"Number (Enter = {selected + 1}, q cancels): ").strip()
-    if raw.lower() == "q":
-        return -1
-    if not raw:
-        return selected
-    return int(raw) - 1 if raw.isdigit() and 1 <= int(raw) <= len(items) else selected
 
 
 # --- inventory --------------------------------------------------------------------------------
@@ -125,109 +97,67 @@ def inventory(cfg: dict) -> dict[str, list[str]]:
 
 def run(get: Callable[[str, Any], Any], set_: Callable[[str, Any], None]) -> None:
     cfg = _config()
-    current = parse_scope(get("scope", {}))
+    current = load_settings(get).ladder
     inv = inventory(cfg)
-    for slug, models in current.providers.items():
-        inv.setdefault(slug, [])
-        inv[slug] += [m for m in models if m not in inv[slug]]
-    if not inv:
+    known = [f"{p}/{m}" for p, models in inv.items() for m in models]
+    known += [c.key for c in current.models() if c.key not in known]
+    if not known:
         print("Hermes has no providers with credentials yet. Run `hermes model` first.")
         return
-    slugs = list(inv)
-    picked = _checklist(f"Step 1/3 · Providers routing may use (at most {MAX_PROVIDERS})",
-                        [f"{s}  ({len(inv[s])} models)" for s in slugs],
-                        {i for i, s in enumerate(slugs) if s in current.providers})
-    if picked is None:
-        print("No change.")
-        return
-    chosen = [slugs[i] for i in sorted(picked)]
-    if not chosen:
-        print("No provider checked; nothing saved.")
-        return
-    if len(chosen) > MAX_PROVIDERS:
-        print(f"Only {MAX_PROVIDERS} providers are allowed; keeping {', '.join(chosen[:MAX_PROVIDERS])}.")
-        chosen = chosen[:MAX_PROVIDERS]
-
-    scope: dict[str, list[str]] = {}
-    for slug in chosen:
-        models = list(inv[slug])
-        already = set(current.providers.get(slug, []))
-        marks = _checklist(f"Step 2/3 · {slug}: models routing may use", models + ["+ type a model id"],
-                           {i for i, m in enumerate(models) if m in already})
+    print("A blocked reply climbs the ladder: tier 1's models are asked first (in parallel), then tier 2, …\n"
+          "Within a tier the order below is the priority. Check nothing to end the ladder.")
+    tiers: list[list[str]] = []
+    placed: set[str] = set()
+    for number in range(1, MAX_WIZARD_TIERS + 1):
+        free = [k for k in known if k not in placed]
+        was = [c.key for c in current.tiers[number - 1]] if number <= len(current.tiers) else []
+        items = free + ["+ type provider/model"]
+        marks = _checklist(f"Tier {number} · models to ask {'first' if number == 1 else 'next'}", items,
+                           {i for i, k in enumerate(free) if k in was})
         if marks is None:
             print("No change.")
             return
-        sel = [models[i] for i in sorted(marks) if i < len(models)]
-        if len(models) in marks:
-            typed = input(f"Model ids for {slug} (comma-separated): ").strip()
-            sel += [m.strip() for m in typed.split(",") if m.strip() and m.strip() not in sel]
-        if sel:
-            scope[slug] = sel
-    if not scope:
+        chosen = [free[i] for i in sorted(marks) if i < len(free)]
+        if len(free) in marks:
+            typed = input("provider/model ids (comma-separated): ").strip()
+            for raw in typed.split(","):
+                cand = parse_candidate(raw)
+                if cand is not None and cand.key not in placed and cand.key not in chosen:
+                    chosen.append(cand.key)
+        if not chosen:
+            break
+        tiers.append(chosen)
+        placed.update(chosen)
+    if not tiers:
         print("No model checked; nothing saved.")
         return
-
-    allowed = [f"{p}/{m}" for p, models in scope.items() for m in models]
-    routes: dict[str, list[str]] = {}
-    old_routes = get("routes", {}) or {}
-    for cls in TASK_CLASSES:
-        first_default = 0
-        old = (old_routes.get(cls) or [None])[0] if isinstance(old_routes, dict) else None
-        if isinstance(old, str) and old.split("@")[0] in allowed:
-            first_default = allowed.index(old.split("@")[0])
-        idx = _radio(f"Step 3/3 · {cls} tasks ({_CLASS_HELP[cls]}): try which model first?", allowed,
-                     first_default)
-        if idx < 0:
-            print("No change.")
-            return
-        efforts = [e for e in EFFORTS if e != "none"]
-        e_idx = _radio(f"{cls}: reasoning effort for {allowed[idx]}", efforts,
-                       efforts.index(DEFAULT_EFFORT[cls]))
-        effort = efforts[e_idx] if e_idx >= 0 else DEFAULT_EFFORT[cls]
-        others = [a for a in allowed if a != allowed[idx]]
-        routes[cls] = [f"{allowed[idx]}@{effort}"] + [f"{a}@{effort}" for a in others]
-
-    set_("scope", scope)
-    set_("routes", routes)
+    set_("tiers", tiers)
     if str(get("mode", "auto")) not in ("auto", "off"):
         set_("mode", "auto")
-    print("\nSaved. New sessions pick this up; a running gateway reads it on the next turn.\n")
-    print(describe(load_settings(get), _NullRouter(), "", cfg))
-
-
-class _NullRouter:
-    """``describe`` without live state (the CLI runs outside the gateway)."""
-
-    def preferences(self) -> dict:
-        return {}
-
-    def order_for(self, s, cls, session_id: str = "", **_: Any):
-        return list(s.routes.get(cls) or [])
-
-    def pinned(self, session_id: str):
-        return None
-
-    def sec_on(self, session_id: str) -> bool:
-        return False
-
-    def level_for(self, session_id: str) -> int:
-        return 0
-
-    def last_turn(self, session_id: str):
-        return None
+    print("\nSaved. A running gateway reads tiers on the next turn; hold_stream (auto) changes on restart.\n")
+    print(report.describe(load_settings(get), {}))
 
 
 def setup_parser(parser) -> None:
     sub = parser.add_subparsers(dest="model_router_command", metavar="<command>")
-    sub.add_parser("setup", help="Check off allowed providers/models and pick the route per task class")
-    sub.add_parser("show", help="Print the allowlist and routes")
+    sub.add_parser("setup", help="Put models on the tier ladder")
+    sub.add_parser("show", help="Print the tier ladder")
+
+
+def _promotions(ctx: Any) -> dict:
+    try:
+        from .promote import Promotions
+        return Promotions(getattr(ctx, "state", None)).get()
+    except Exception:
+        return {}
 
 
 def make_handler(ctx: Any):
     def handle(args) -> int:
         cmd = getattr(args, "model_router_command", None)
         if cmd == "show":
-            print(describe(load_settings(ctx.get_config), _NullRouter(), "", _config()))
+            from .ladder import hook_timeout
+            print(report.describe(load_settings(ctx.get_config), _promotions(ctx), hook_timeout=hook_timeout()))
             return 0
         if cmd != "setup":
             print("usage: hermes model-router {setup,show}")
